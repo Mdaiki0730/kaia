@@ -120,6 +120,10 @@ func (e *ExternallyOwnedAccount) GetStorageRoot() common.ExtHash {
 }
 
 func (e *ExternallyOwnedAccount) GetCodeHash() []byte {
+	// For EOA backwards compatibility emptyCodeHash returns nil
+	if bytes.Equal(e.codeHash, emptyCodeHash) {
+		return nil
+	}
 	return e.codeHash
 }
 
@@ -176,10 +180,10 @@ func (e *ExternallyOwnedAccount) fromSerializableExt(o *externallyOwnedAccountSe
 }
 
 func (e *ExternallyOwnedAccount) EncodeRLP(w io.Writer) error {
-	if e.codeHash != nil {
-		return rlp.Encode(w, e.toSerializable())
+	if e.codeHash == nil || bytes.Equal(e.codeHash, emptyCodeHash) {
+		return rlp.Encode(w, e.AccountCommon.toSerializable())
 	}
-	return rlp.Encode(w, e.AccountCommon.toSerializable())
+	return rlp.Encode(w, e.toSerializable())
 }
 
 func (e *ExternallyOwnedAccount) EncodeRLPExt(w io.Writer) error {
@@ -240,19 +244,19 @@ func (e *ExternallyOwnedAccount) DecodeRLP(s *rlp.Stream) error {
 }
 
 func (e *ExternallyOwnedAccount) MarshalJSON() ([]byte, error) {
-	if e.codeHash != nil {
-		return json.Marshal(&externallyOwnedAccountSerializableJSON{
-			Nonce:         e.nonce,
-			Balance:       (*hexutil.Big)(e.balance),
-			HumanReadable: e.humanReadable,
-			Key:           accountkey.NewAccountKeySerializerWithAccountKey(e.key),
-			StorageRoot:   e.storageRoot.Unextend(), // Unextend for API compatibility
-			CodeHash:      e.codeHash,
-			CodeFormat:    e.codeInfo.GetCodeFormat(),
-			VmVersion:     e.codeInfo.GetVmVersion(),
-		})
+	if e.codeHash == nil || bytes.Equal(e.codeHash, emptyCodeHash) {
+		return e.AccountCommon.MarshalJSON()
 	}
-	return e.AccountCommon.MarshalJSON()
+	return json.Marshal(&externallyOwnedAccountSerializableJSON{
+		Nonce:         e.nonce,
+		Balance:       (*hexutil.Big)(e.balance),
+		HumanReadable: e.humanReadable,
+		Key:           accountkey.NewAccountKeySerializerWithAccountKey(e.key),
+		StorageRoot:   e.storageRoot.Unextend(), // Unextend for API compatibility
+		CodeHash:      e.codeHash,
+		CodeFormat:    e.codeInfo.GetCodeFormat(),
+		VmVersion:     e.codeInfo.GetVmVersion(),
+	})
 }
 
 func (e *ExternallyOwnedAccount) UnmarshalJSON(b []byte) error {

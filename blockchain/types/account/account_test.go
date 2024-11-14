@@ -249,6 +249,57 @@ func TestAccountSerializer(t *testing.T) {
 				},
 			},
 		},
+		{
+			"Set Code to EOA with Zero-extended StorageRoot",
+			&ExternallyOwnedAccount{
+				AccountCommon: commonFields,
+				storageRoot:   roothash.ExtendZero(),
+				codeHash:      codehash,
+				codeInfo:      codeinfo,
+			},
+			// 01 [["0x2a","0x12345678","","0x01",[]],"0x00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff","0xaaaaaaaabbbbbbbbccccccccddddddddaaaaaaaabbbbbbbbccccccccdddddddd","0x10"]
+			"0x01f84dc92a84123456788001c0a000112233445566778899aabbccddeeff00112233445566778899aabbccddeeffa0aaaaaaaabbbbbbbbccccccccddddddddaaaaaaaabbbbbbbbccccccccdddddddd10",
+			"0x01f84dc92a84123456788001c0a000112233445566778899aabbccddeeff00112233445566778899aabbccddeeffa0aaaaaaaabbbbbbbbccccccccddddddddaaaaaaaabbbbbbbbccccccccdddddddd10",
+			map[string]interface{}{
+				"accType": 1,
+				"account": map[string]interface{}{
+					"nonce":         42,
+					"balance":       "0x12345678",
+					"humanReadable": false,
+					"key":           legacyKeyJson,
+					"storageRoot":   roothash.Hex(),
+					"codeHash":      codehashB64,
+					"codeFormat":    0,
+					"vmVersion":     1,
+				},
+			},
+		},
+		{
+			"Set code to EOA with Nonzero-extended StorageRoot",
+			&ExternallyOwnedAccount{
+				AccountCommon: commonFields,
+				storageRoot:   roothashExt,
+				codeHash:      codehash,
+				codeInfo:      codeinfo,
+			},
+			// 01 [["0x2a","0x12345678","","0x01",[]],"0x00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff","0xaaaaaaaabbbbbbbbccccccccddddddddaaaaaaaabbbbbbbbccccccccdddddddd","0x10"]
+			"0x01f84dc92a84123456788001c0a000112233445566778899aabbccddeeff00112233445566778899aabbccddeeffa0aaaaaaaabbbbbbbbccccccccddddddddaaaaaaaabbbbbbbbccccccccdddddddd10",
+			// 01 [["0x2a","0x12345678","","0x01",[]],"0x00112233445566778899aabbccddeeff00112233445566778899aabbccddeeffccccddddeeee01","0xaaaaaaaabbbbbbbbccccccccddddddddaaaaaaaabbbbbbbbccccccccdddddddd","0x10"]
+			"0x01f854c92a84123456788001c0a700112233445566778899aabbccddeeff00112233445566778899aabbccddeeffccccddddeeee01a0aaaaaaaabbbbbbbbccccccccddddddddaaaaaaaabbbbbbbbccccccccdddddddd10",
+			map[string]interface{}{
+				"accType": 1,
+				"account": map[string]interface{}{
+					"nonce":         42,
+					"balance":       "0x12345678",
+					"humanReadable": false,
+					"key":           legacyKeyJson,
+					"storageRoot":   roothash.Hex(),
+					"codeHash":      codehashB64,
+					"codeFormat":    0,
+					"vmVersion":     1,
+				},
+			},
+		},
 	}
 	for _, tc := range testcases {
 		t.Run(tc.desc, func(t *testing.T) {

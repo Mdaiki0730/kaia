@@ -26,6 +26,7 @@ import (
 	"math/big"
 
 	"github.com/kaiachain/kaia/blockchain/types"
+	"github.com/kaiachain/kaia/blockchain/types/account"
 	"github.com/kaiachain/kaia/blockchain/types/accountkey"
 	"github.com/kaiachain/kaia/common"
 	"github.com/kaiachain/kaia/params"
@@ -49,6 +50,7 @@ type StateDB interface {
 	GetCodeHash(common.Address) common.Hash
 	GetCode(common.Address) []byte
 	SetCode(common.Address, []byte) error
+	SetCodeToEOA(common.Address, []byte) error
 	GetCodeSize(common.Address) int
 	GetVmVersion(common.Address) (params.VmVersion, bool)
 
@@ -107,4 +109,6 @@ type StateDB interface {
 	GetTxHash() common.Hash
 
 	GetKey(address common.Address) accountkey.AccountKey
+
+	GetAccount(address common.Address) account.Account
 }

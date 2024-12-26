@@ -520,7 +520,11 @@ func calculateEthMiningReward(gasPrice, maxFeePerGas, maxPriorityFeePerGas, envB
 			// parent - 2 : 0xa as the basefee for 'this' context.
 			baseFee = big.NewInt(0x0a)
 		}
-		effectiveTip = math.BigMin(maxPriorityFeePerGas, new(big.Int).Sub(maxFeePerGas, baseFee))
+
+		effectiveTip = new(big.Int).Sub(maxFeePerGas, baseFee)
+		if effectiveTip.Cmp(maxPriorityFeePerGas) > 0 {
+			effectiveTip = maxPriorityFeePerGas
+		}
 	}
 
 	fee := new(big.Int).SetUint64(usedGas)

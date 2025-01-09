@@ -108,10 +108,10 @@ func (suite *ExecutionSpecBlockTestSuite) TestExecutionSpecBlock() {
 	// bt.skipLoad(`^cancun\/eip1153_tstore\/basic_tload.*\/`)
 	// bt.skipLoad(`^cancun\/eip1153_tstore\/tload_calls.*\/`)
 	// bt.skipLoad(`^cancun\/eip1153_tstore\/tstorage.*\/`)
-	bt.skipLoad(`^cancun\/eip1153_tstore\/tload_reentrancy\/`)                                      // remain 6 errors
-	bt.skipLoad(`^cancun\/eip1153_tstore\/tstore_reentrancy\/`)                                     // remain 12 errors
-	bt.skipLoad(`^cancun\/eip5656_mcopy\/mcopy_memory_expansion\/mcopy_huge_memory_expansion.json`) // remain 9 errors
-	bt.skipLoad(`^cancun\/eip6780_selfdestruct\/`)                                                  // huge errors
+	// bt.skipLoad(`^cancun\/eip1153_tstore\/tload_reentrancy\/`)                                      // remain 6 errors
+	// bt.skipLoad(`^cancun\/eip1153_tstore\/tstore_reentrancy\/`)                                     // remain 12 errors
+	// bt.skipLoad(`^cancun\/eip5656_mcopy\/mcopy_memory_expansion\/mcopy_huge_memory_expansion.json`) // remain 9 errors
+	bt.skipLoad(`^cancun\/eip6780_selfdestruct\/`) // huge errors
 
 	bt.skipLoad(`^constantinople\/`)
 	bt.skipLoad(`^frontier\/`)

@@ -292,12 +292,7 @@ func (t *StateTest) RunNoVerify(subtest StateSubtest, vmconfig vm.Config, isTest
 	if isTestExecutionSpecState {
 		blockContext.GasLimit = t.json.Env.GasLimit
 	}
-	fmt.Printf("vmconfig: %+v\n", vmconfig)
-	tracer := vm.NewStructLogger(nil)
-	vmconfig.Tracer = tracer
-	vmconfig.Debug = true
 	vmconfig.ComputationCostLimit = params.OpcodeComputationCostLimitInfinite
-	fmt.Printf("config: %+v\n", config)
 	evm := vm.NewEVM(blockContext, txContext, st, config, &vmconfig)
 
 	if isTestExecutionSpecState {
@@ -308,10 +303,6 @@ func (t *StateTest) RunNoVerify(subtest StateSubtest, vmconfig vm.Config, isTest
 	result, err := blockchain.ApplyMessage(evm, msg)
 	if err != nil {
 		st.RevertToSnapshot(snapshot)
-	}
-	fmt.Println("usedGas: ", result.UsedGas)
-	for _, log := range tracer.StructLogs() {
-		fmt.Printf("%+v\n", log)
 	}
 
 	if err == nil && isTestExecutionSpecState {

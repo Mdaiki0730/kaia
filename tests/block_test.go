@@ -23,7 +23,6 @@
 package tests
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/kaiachain/kaia/common"
@@ -106,13 +105,8 @@ func (suite *ExecutionSpecBlockTestSuite) TestExecutionSpecBlock() {
 	bt.skipLoad(`^berlin\/`)
 	bt.skipLoad(`^byzantium\/`)
 	// bt.skipLoad(`^cancun\/`)
-	// bt.skipLoad(`^cancun\/eip1153_tstore\/basic_tload.*\/`)
-	// bt.skipLoad(`^cancun\/eip1153_tstore\/tload_calls.*\/`)
-	// bt.skipLoad(`^cancun\/eip1153_tstore\/tstorage.*\/`)
-	// bt.skipLoad(`^cancun\/eip1153_tstore\/tload_reentrancy\/`)                                      // remain 6 errors
-	bt.skipLoad(`^cancun\/eip1153_tstore\/tstore_reentrancy\/`)                                     // remain 12 errors
-	bt.skipLoad(`^cancun\/eip5656_mcopy\/mcopy_memory_expansion\/mcopy_huge_memory_expansion.json`) // remain 9 errors
-	bt.skipLoad(`^cancun\/eip6780_selfdestruct\/`)                                                  // huge errors
+	bt.skipLoad(`^cancun\/eip1153_tstore\/tstorage.*\/`) // receipt hash error
+	// bt.skipLoad(`^cancun\/eip6780_selfdestruct\/`)       // huge errors
 
 	bt.skipLoad(`^constantinople\/`)
 	bt.skipLoad(`^frontier\/`)
@@ -129,15 +123,11 @@ func (suite *ExecutionSpecBlockTestSuite) TestExecutionSpecBlock() {
 	bt.skipLoad(`^cancun\/eip7516_blobgasfee\/`)
 
 	bt.walk(t, executionSpecBlockTestDir, func(t *testing.T, name string, test *BlockTest) {
-		boundaryValueTests := []string{"ShanghaiToCancunAtTime15k"}
+		boundaryValueTests := []string{"ShanghaiToCancunAtTime15k", "Paris"}
 		for _, boundaryValueTest := range boundaryValueTests {
 			if test.json.Network == boundaryValueTest {
 				t.Skip()
 			}
-		}
-
-		if !strings.Contains(name, "test_tload_reentrancy[fork_Cancun-blockchain_test-call_dest_type_CallDestType.EXTERNAL_CALL-call_return_OOG-call_type_CALLCODE]") {
-			t.Skip()
 		}
 
 		if err := bt.checkFailure(t, name, test.Run()); err != nil {

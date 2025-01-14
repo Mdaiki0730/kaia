@@ -253,7 +253,7 @@ func (t *BlockTest) insertBlocksFromTx(bc *blockchain.BlockChain, preBlock *type
 	senderMap := map[common.Address]*big.Int{}
 	// insert the test blocks, which will execute all transactions
 	for _, b := range t.json.Blocks {
-		txs, rewardBase, baseFeePerGas, gasUsed, err := b.decodeTx()
+		txs, header, err := b.decodeTx()
 		if err != nil {
 			if b.BlockHeader == nil {
 				continue // OK - block is supposed to be invalid, continue with next block
@@ -265,9 +265,16 @@ func (t *BlockTest) insertBlocksFromTx(bc *blockchain.BlockChain, preBlock *type
 		kaiaReward := common.Big0
 		ethReward := common.Big0
 		var ethGasUsedForBlock uint64 = 0
+
+		// The intrinsic gas calculation affects gas used, so we need to make some changes to the main code.
+		if bc.Config().IsIstanbulForkEnabled(bc.CurrentHeader().Number) {
+			types.ForTestIsPrague = true
+		}
+		blockchain.ForTestGasLimit = header.GasLimit
+
 		// var maxFeePerGas *big.Int
 		blocks, receiptsList := blockchain.GenerateChain(bc.Config(), preBlock, bc.Engine(), db, 1, func(i int, b *blockchain.BlockGen) {
-			b.SetRewardbase(rewardBase)
+			b.SetRewardbase(common.Address(header.Coinbase))
 			for _, tx := range txs {
 				b.AddTx(tx)
 			}
@@ -290,55 +297,41 @@ func (t *BlockTest) insertBlocksFromTx(bc *blockchain.BlockChain, preBlock *type
 
 				// eth gas price
 				ethGasPrice := tx.GasPrice()
-				if baseFeePerGas != nil {
-					ethGasPrice = math.BigMin(new(big.Int).Add(tx.GasTipCap(), baseFeePerGas), tx.GasFeeCap())
+				if header.BaseFee != nil {
+					ethGasPrice = math.BigMin(new(big.Int).Add(tx.GasTipCap(), header.BaseFee), tx.GasFeeCap())
 				}
 
 				// Record kaia's reward.
 				kaiaReward = new(big.Int).Add(kaiaReward, new(big.Int).Mul(new(big.Int).SetUint64(receipt.GasUsed), kaiaGasPrice))
 
 				// Record eth's reward.
-				kaiaIntrinsicGas, _ := types.IntrinsicGas(tx.Data(), tx.AccessList(), tx.AuthorizationList(), tx.To() == nil, bc.Config().Rules(blocks[0].Header().Number))
-				ethIntrinsicGas, _ := types.IntrinsicGas(tx.Data(), tx.AccessList(), tx.AuthorizationList(), tx.To() == nil, bc.Config().Rules(blocks[0].Header().Number))
+				fmt.Printf("KaiaGasUsed: %v, EthGasUsedForBlock: %v, ExpectedGasUsed: %v\n", blocks[0].GasUsed(), ethGasUsedForBlock, header.GasUsed)
 
-				// ethGasUsed := gasUsed
-				ethGasUsed := receipt.GasUsed
-				if bc.Config().Rules(blocks[0].Header().Number).IsIstanbul {
-					ruleForCaliculateEthGas := bc.Config().Rules(blocks[0].Number())
-					ruleForCaliculateEthGas.IsPrague = true
-					ethIntrinsicGas, _ = types.IntrinsicGas(tx.Data(), tx.AccessList(), tx.AuthorizationList(), tx.To() == nil, ruleForCaliculateEthGas)
-
-					ethGasUsed = receipt.GasUsed - kaiaIntrinsicGas + ethIntrinsicGas
-				}
-
-				ethGasUsedForBlock += ethGasUsed
-
-				fmt.Printf("KaiaGasUsed: %v, EthGasUsedForBlock: %v, ExpectedGasUsed: %v, KaiaIntrinsicGas: %v, EthIntrinsicGas: %v\n", blocks[0].GasUsed(), ethGasUsedForBlock, gasUsed, kaiaIntrinsicGas, ethIntrinsicGas)
-
-				ethReward = new(big.Int).Add(ethReward, calculateEthMiningReward(ethGasPrice, tx.GasFeeCap(), tx.GasTipCap(), baseFeePerGas,
-					ethGasUsed, bc.Config().Rules(blocks[0].Header().Number)))
+				ethReward = new(big.Int).Add(ethReward, calculateEthMiningReward(ethGasPrice, tx.GasFeeCap(), tx.GasTipCap(), header.BaseFee,
+					receipt.GasUsed, bc.Config().Rules(blocks[0].Header().Number)))
 
 				// because it is a eth test, we don't have to think about fee payer
 				senderMap[tx.ValidatedSender()] = new(big.Int).Sub(
 					new(big.Int).Mul(new(big.Int).SetUint64(receipt.GasUsed), kaiaGasPrice),
-					new(big.Int).Mul(new(big.Int).SetUint64(ethGasUsed), ethGasPrice))
+					new(big.Int).Mul(new(big.Int).SetUint64(receipt.GasUsed), ethGasPrice))
 			}
 		}
 
-		rewardMap[rewardBase] = rewardList{
+		if header.GasUsed != blocks[0].GasUsed() {
+			return nil, nil, nil, fmt.Errorf("Unexpected GasUsed error (Expected: %v, Actual: %v)", header.GasUsed, blocks[0].GasUsed())
+		}
+
+		rewardMap[common.Address(header.Coinbase)] = rewardList{
 			kaiaReward: kaiaReward,
 			ethReward:  ethReward,
 		}
 
-		// if ethGasUsedForBlock != gasUsed {
-		// 	return nil, nil, nil, fmt.Errorf("Unexpected defference of gas: calculated %v, expected %v", ethGasUsedForBlock, gasUsed)
-		// }
 		i, err := bc.InsertChain(blocks)
 
 		// logging exectuted data
-		for _, structLog := range tracer.StructLogs() {
-			fmt.Printf("%+v\n", structLog)
-		}
+		// for _, structLog := range tracer.StructLogs() {
+		// 	fmt.Printf("%+v\n", structLog)
+		// }
 
 		if err != nil {
 			if b.BlockHeader == nil {
@@ -538,47 +531,41 @@ func (bb *btBlock) decode(latestParentHash common.Hash, latestRoot common.Hash) 
 }
 
 // Modify the decode function
-func (bb *btBlock) decodeTx() (types.Transactions, common.Address, *big.Int, uint64, error) {
+func (bb *btBlock) decodeTx() (types.Transactions, TestHeader, error) {
 	data, err := hexutil.Decode(bb.Rlp)
 	if err != nil {
-		return nil, common.Address{}, nil, 0, fmt.Errorf("failed to decode hex: %v", err)
+		return nil, TestHeader{}, fmt.Errorf("failed to decode hex: %v", err)
 	}
 
 	// First decode just the raw RLP list
 	s := rlp.NewStream(bytes.NewReader(data), 0)
 	kind, _, err := s.Kind()
 	if err != nil {
-		return nil, common.Address{}, nil, 0, fmt.Errorf("failed to get RLP kind: %v", err)
+		return nil, TestHeader{}, fmt.Errorf("failed to get RLP kind: %v", err)
 	}
 
 	if kind != rlp.List {
-		return nil, common.Address{}, nil, 0, fmt.Errorf("expected RLP list, got %v", kind)
+		return nil, TestHeader{}, fmt.Errorf("expected RLP list, got %v", kind)
 	}
 
 	// Manual decoding approach
 	if _, err := s.List(); err != nil {
-		return nil, common.Address{}, nil, 0, fmt.Errorf("failed to enter outer list: %v", err)
+		return nil, TestHeader{}, fmt.Errorf("failed to enter outer list: %v", err)
 	}
 
 	// Decode header
 	var header TestHeader
 	if err := s.Decode(&header); err != nil {
-		return nil, common.Address{}, nil, 0, fmt.Errorf("failed to decode header: %v", err)
+		return nil, TestHeader{}, fmt.Errorf("failed to decode header: %v", err)
 	}
 
 	// Decode transactions
 	var txs types.Transactions
 	if err := s.Decode(&txs); err != nil {
-		return nil, common.Address{}, nil, 0, fmt.Errorf("failed to decode transactions: %v", err)
+		return nil, TestHeader{}, fmt.Errorf("failed to decode transactions: %v", err)
 	}
 
-	// Convert header
-	var rewardbase common.Address
-	if len(header.Coinbase) > 0 {
-		copy(rewardbase[:], header.Coinbase[:20])
-	}
-
-	return txs, rewardbase, header.BaseFee, header.GasUsed, nil
+	return txs, header, nil
 }
 
 // func useEthBlockHash(r params.Rules, json *btJSON) common.Hash {

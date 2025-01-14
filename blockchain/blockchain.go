@@ -2733,6 +2733,8 @@ func (bc *BlockChain) SaveTrieNodeCacheToDisk() error {
 	return nil
 }
 
+var ForTestGasLimit uint64
+
 // ApplyTransaction attempts to apply a transaction to the given state database
 // and uses the input parameters for its environment. It returns the receipt
 // for the transaction, gas used and an error if the transaction failed,
@@ -2760,6 +2762,9 @@ func (bc *BlockChain) ApplyTransaction(chainConfig *params.ChainConfig, author *
 	}
 	// Create a new context to be used in the EVM environment
 	blockContext := NewEVMBlockContext(header, bc, author)
+	if ForTestGasLimit != 0 {
+		blockContext.GasLimit = ForTestGasLimit
+	}
 	txContext := NewEVMTxContext(msg, header, chainConfig)
 	// Create a new environment which holds all relevant information
 	// about the transaction and calling mechanisms.

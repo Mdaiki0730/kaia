@@ -26,7 +26,6 @@ import (
 	"bytes"
 	"fmt"
 	"reflect"
-	"strings"
 	"testing"
 
 	"github.com/kaiachain/kaia/blockchain/vm"
@@ -145,14 +144,10 @@ func execStateTest(t *testing.T, st *testMatcher, test *StateTest, name string, 
 					t.Skipf("%s not supported yet", subtest.Fork)
 				}
 			}
-			if !strings.Contains(name, "test_tload_reentrancy[fork_Cancun-state_test-call_dest_type_CallDestType.EXTERNAL_CALL-call_return_OOG-call_type_CALLCODE]") {
-				t.Skip()
-			}
 			withTrace(t, test.gasLimit(subtest), func(vmconfig vm.Config) error {
 				err := test.Run(subtest, vmconfig, isTestExecutionSpecState)
 				return st.checkFailure(t, name, err)
 			})
-			t.Fatal()
 		})
 	}
 }

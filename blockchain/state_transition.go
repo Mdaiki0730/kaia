@@ -396,6 +396,7 @@ func (st *StateTransition) TransitionDb() (*ExecutionResult, error) {
 		ret   []byte
 		vmerr error
 	)
+	fmt.Println("st.gas: ", st.gas)
 	ret, st.gas, vmerr = msg.Execute(st.evm, st.state, st.evm.Context.BlockNumber.Uint64(), st.gas, st.value)
 
 	// These tx types does not enter the EVM in the msg.Execute() method. For the purpose of debug traces,

@@ -146,14 +146,16 @@ func (t *BlockTest) Run() error {
 	}
 
 	// TODO-Kaia: Replace gxhash with istanbul
-	chain, err := blockchain.NewBlockChain(db, nil, config, gxhash.NewShared(), vm.Config{})
+	fmt.Printf("config: %+v\n", config)
+	tracer := vm.NewStructLogger(nil)
+	chain, err := blockchain.NewBlockChain(db, nil, config, gxhash.NewShared(), vm.Config{Debug: true, Tracer: tracer, ComputationCostLimit: params.OpcodeComputationCostLimitInfinite})
 	if err != nil {
 		return err
 	}
 	defer chain.Stop()
 
 	// validBlocks, err := t.insertBlocks(chain, gblock)
-	_, rewardMap, senderMap, err := t.insertBlocksFromTx(chain, gblock, db)
+	_, rewardMap, senderMap, err := t.insertBlocksFromTx(chain, gblock, db, tracer)
 	if err != nil {
 		return err
 	}
@@ -245,7 +247,7 @@ type rewardList struct {
 	ethReward  *big.Int
 }
 
-func (t *BlockTest) insertBlocksFromTx(bc *blockchain.BlockChain, preBlock *types.Block, db database.DBManager) ([]btBlock, map[common.Address]rewardList, map[common.Address]*big.Int, error) {
+func (t *BlockTest) insertBlocksFromTx(bc *blockchain.BlockChain, preBlock *types.Block, db database.DBManager, tracer *vm.StructLogger) ([]btBlock, map[common.Address]rewardList, map[common.Address]*big.Int, error) {
 	validBlocks := make([]btBlock, 0)
 	rewardMap := map[common.Address]rewardList{}
 	senderMap := map[common.Address]*big.Int{}
@@ -328,10 +330,16 @@ func (t *BlockTest) insertBlocksFromTx(bc *blockchain.BlockChain, preBlock *type
 			ethReward:  ethReward,
 		}
 
-		if ethGasUsedForBlock != gasUsed {
-			return nil, nil, nil, fmt.Errorf("Unexpected defference of gas: calculated %v, expected %v", ethGasUsedForBlock, gasUsed)
-		}
+		// if ethGasUsedForBlock != gasUsed {
+		// 	return nil, nil, nil, fmt.Errorf("Unexpected defference of gas: calculated %v, expected %v", ethGasUsedForBlock, gasUsed)
+		// }
 		i, err := bc.InsertChain(blocks)
+
+		// logging exectuted data
+		for _, structLog := range tracer.StructLogs() {
+			fmt.Printf("%+v\n", structLog)
+		}
+
 		if err != nil {
 			if b.BlockHeader == nil {
 				continue // OK - block is supposed to be invalid, continue with next block

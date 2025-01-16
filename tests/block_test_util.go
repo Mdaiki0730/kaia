@@ -146,9 +146,8 @@ func (t *BlockTest) Run() error {
 	}
 
 	// TODO-Kaia: Replace gxhash with istanbul
-	fmt.Printf("config: %+v\n", config)
 	tracer := vm.NewStructLogger(nil)
-	chain, err := blockchain.NewBlockChain(db, nil, config, gxhash.NewShared(), vm.Config{Debug: true, Tracer: tracer, ComputationCostLimit: params.OpcodeComputationCostLimitInfinite})
+	chain, err := blockchain.NewBlockChain(db, nil, config, gxhash.NewShared(), vm.Config{Debug: true, Tracer: tracer})
 	if err != nil {
 		return err
 	}
@@ -276,7 +275,7 @@ func (t *BlockTest) insertBlocksFromTx(bc *blockchain.BlockChain, preBlock *type
 		blocks, receiptsList := blockchain.GenerateChain(bc.Config(), preBlock, bc.Engine(), db, 1, func(i int, b *blockchain.BlockGen) {
 			b.SetRewardbase(common.Address(header.Coinbase))
 			for _, tx := range txs {
-				b.AddTx(tx)
+				_ = b.AddTxWithChainWithError(nil, tx)
 			}
 		})
 
@@ -311,6 +310,7 @@ func (t *BlockTest) insertBlocksFromTx(bc *blockchain.BlockChain, preBlock *type
 					receipt.GasUsed, bc.Config().Rules(blocks[0].Header().Number)))
 
 				// because it is a eth test, we don't have to think about fee payer
+				// Because the baseFee is set to 0, Kaia's gas fee may be 0 if the transaction has a dynamic fee.
 				senderMap[tx.ValidatedSender()] = new(big.Int).Sub(
 					new(big.Int).Mul(new(big.Int).SetUint64(receipt.GasUsed), kaiaGasPrice),
 					new(big.Int).Mul(new(big.Int).SetUint64(receipt.GasUsed), ethGasPrice))

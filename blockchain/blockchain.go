@@ -2734,6 +2734,7 @@ func (bc *BlockChain) SaveTrieNodeCacheToDisk() error {
 }
 
 var ForTestGasLimit uint64
+var IsExecutionSpecTest bool
 
 // ApplyTransaction attempts to apply a transaction to the given state database
 // and uses the input parameters for its environment. It returns the receipt
@@ -2762,6 +2763,8 @@ func (bc *BlockChain) ApplyTransaction(chainConfig *params.ChainConfig, author *
 	}
 	// Create a new context to be used in the EVM environment
 	blockContext := NewEVMBlockContext(header, bc, author)
+
+	// when execution spec test, we can insert test GasLimit to blockContext.
 	if ForTestGasLimit != 0 {
 		blockContext.GasLimit = ForTestGasLimit
 	}
@@ -2769,6 +2772,12 @@ func (bc *BlockChain) ApplyTransaction(chainConfig *params.ChainConfig, author *
 	// Create a new environment which holds all relevant information
 	// about the transaction and calling mechanisms.
 	vmenv := vm.NewEVM(blockContext, txContext, statedb, chainConfig, vmConfig)
+	// when execution spec test, we can insert test GasLimit to blockContext.
+	if IsExecutionSpecTest && chainConfig.Rules(header.Number).IsCancun {
+		// EIP-1052 must be activated for backward compatibility on Kaia. But EIP-2929 is activated instead of it on Ethereum
+		vm.ChangeGasCostForTest(&vmenv.Config.JumpTable, vm.EXTCODEHASH, params.WarmStorageReadCostEIP2929)
+	}
+
 	// Apply the transaction to the current state (included in the env)
 	result, err := ApplyMessage(vmenv, msg)
 	if err != nil {

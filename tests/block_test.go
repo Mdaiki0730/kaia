@@ -134,9 +134,15 @@ func (suite *ExecutionSpecBlockTestSuite) TestExecutionSpecBlock() {
 			}
 		}
 
+		// if !strings.Contains(name, "[fork_Prague-blockchain_test-too_little_execution_gas-max_size_zeros]") {
+		// 	t.Skip()
+		// }
+
 		if err := bt.checkFailure(t, name, test.Run()); err != nil {
 			t.Error(err)
 		}
+
+		// t.Fail()
 	})
 }
 

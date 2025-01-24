@@ -909,3 +909,111 @@ func writeCommittedSeals(h *types.Header, committedSeals [][]byte) error {
 	h.Extra = append(h.Extra[:types.IstanbulExtraVanity], payload...)
 	return nil
 }
+
+// VerifyHeader checks whether a header conforms to the consensus rules of a
+// given engine. Verifying the seal may be done optionally here, or explicitly
+// via the VerifySeal method.
+func (sbf *backendForTest) VerifyHeader(chain consensus.ChainReader, header *types.Header, seal bool) error {
+	return nil
+}
+
+// PreprocessHeaderVerification prepares header verification for heavy computation before synchronous header verification such as ecrecover.
+func (sbf *backendForTest) PreprocessHeaderVerification(headers []*types.Header) (chan<- struct{}, <-chan error) {
+	abort := make(chan struct{})
+	results := make(chan error, inmemoryBlocks)
+	go func() {
+		errored := false
+		for _, header := range headers {
+			var err error
+			if errored { // If errored once in the batch, skip the rest
+				err = consensus.ErrUnknownAncestor
+			} else {
+				err = sbf.computeSignatureAddrs(header)
+			}
+
+			if err != nil {
+				errored = true
+			}
+
+			select {
+			case <-abort:
+				return
+			case results <- err:
+			}
+		}
+	}()
+	return abort, results
+}
+
+// computeSignatureAddrs computes the addresses of signer and validators and caches them.
+func (sb *backendForTest) computeSignatureAddrs(header *types.Header) error {
+	_, err := ecrecover(header)
+	if err != nil {
+		return err
+	}
+
+	// Retrieve the signature from the header extra-data
+	istanbulExtra, err := types.ExtractIstanbulExtra(header)
+	if err != nil {
+		return err
+	}
+
+	proposalSeal := istanbulCore.PrepareCommittedSeal(header.Hash())
+	for _, seal := range istanbulExtra.CommittedSeal {
+		_, err := cacheSignatureAddresses(proposalSeal, seal)
+		if err != nil {
+			return errInvalidSignature
+		}
+	}
+	return nil
+}
+
+// verifyHeader checks whether a header conforms to the consensus rules.The
+// caller may optionally pass in a batch of parents (ascending order) to avoid
+// looking those up from the database. This is useful for concurrently verifying
+// a batch of new headers.
+func (sbf *backendForTest) verifyHeader(chain consensus.ChainReader, header *types.Header, parents []*types.Header) error {
+	if header.Number == nil {
+		return errUnknownBlock
+	}
+
+	// Header verify before/after magma fork
+	if chain.Config().IsMagmaForkEnabled(header.Number) {
+		// the kip71Config used when creating the block number is a previous block config.
+		blockNum := header.Number.Uint64()
+		pset := sbf.govModule.GetParamSet(blockNum)
+		kip71 := pset.ToKip71Config()
+		if err := misc.VerifyMagmaHeader(parents[len(parents)-1], header, kip71); err != nil {
+			return err
+		}
+	} else if header.BaseFee != nil {
+		return consensus.ErrInvalidBaseFee
+	}
+
+	// Don't waste time checking blocks from the future
+	if header.Time.Cmp(big.NewInt(now().Add(allowedFutureBlockTime).Unix())) > 0 {
+		return consensus.ErrFutureBlock
+	}
+
+	// Ensure that the extra data format is satisfied
+	if _, err := types.ExtractIstanbulExtra(header); err != nil {
+		return errInvalidExtraDataFormat
+	}
+	// Ensure that the block's blockscore is meaningful (may not be correct at this point)
+	if header.BlockScore == nil || header.BlockScore.Cmp(defaultBlockScore) != 0 {
+		return errInvalidBlockScore
+	}
+
+	// TODO-kaiax: further flatten the code inside; especially after most of the checks are moved to consensus modules
+	if err := sbf.verifyCascadingFields(chain, header, parents); err != nil {
+		return err
+	}
+
+	for _, module := range sbf.consensusModules {
+		if err := module.VerifyHeader(header); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}

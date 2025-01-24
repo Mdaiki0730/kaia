@@ -467,3 +467,37 @@ func (sb *backend) GetRewardAddress(num uint64, nodeId common.Address) common.Ad
 	}
 	return common.Address{}
 }
+
+type backendForTest struct {
+	*backend
+}
+
+func NewBackendForTest(opts *BackendOpts) consensus.Istanbul {
+	recentMessages, _ := lru.NewARC(inmemoryPeers)
+	knownMessages, _ := lru.NewARC(inmemoryMessages)
+	backend := &backend{
+		config:            opts.IstanbulConfig,
+		istanbulEventMux:  new(event.TypeMux),
+		privateKey:        opts.PrivateKey,
+		address:           crypto.PubkeyToAddress(opts.PrivateKey.PublicKey),
+		blsSecretKey:      opts.BlsSecretKey,
+		logger:            logger.NewWith(),
+		db:                opts.DB,
+		commitCh:          make(chan *types.Result, 1),
+		candidates:        make(map[common.Address]bool),
+		coreStarted:       false,
+		recentMessages:    recentMessages,
+		knownMessages:     knownMessages,
+		rewardbase:        opts.Rewardbase,
+		govModule:         opts.GovModule,
+		blsPubkeyProvider: opts.BlsPubkeyProvider,
+		nodetype:          opts.NodeType,
+	}
+	if backend.blsPubkeyProvider == nil {
+		backend.blsPubkeyProvider = newChainBlsPubkeyProvider()
+	}
+
+	backend.currentView.Store(&istanbul.View{Sequence: big.NewInt(0), Round: big.NewInt(0)})
+	backend.core = istanbulCore.New(backend, backend.config)
+	return &backendForTest{backend: backend}
+}

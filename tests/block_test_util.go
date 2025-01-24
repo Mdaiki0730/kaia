@@ -40,6 +40,9 @@ import (
 	"github.com/kaiachain/kaia/common/math"
 	"github.com/kaiachain/kaia/consensus"
 	"github.com/kaiachain/kaia/consensus/gxhash"
+	"github.com/kaiachain/kaia/consensus/istanbul"
+	"github.com/kaiachain/kaia/consensus/istanbul/backend"
+	"github.com/kaiachain/kaia/crypto"
 	"github.com/kaiachain/kaia/params"
 	"github.com/kaiachain/kaia/rlp"
 	"github.com/kaiachain/kaia/storage/database"
@@ -152,7 +155,25 @@ func (t *BlockTest) Run() error {
 			blockchain.ProcessParentBlockHash(header, vmenv, state, chain.Config().Rules(header.Number))
 		}
 	}
-	chain, err := blockchain.NewBlockChain(db, nil, config, gxhash.NewShared(), vm.Config{Debug: true, Tracer: tracer, ComputationCostLimit: params.OpcodeComputationCostLimitInfinite})
+	defer func() {
+		gxhash.CustomInitialize = nil
+	}()
+
+	gasChanges := map[vm.OpCode]uint64{}
+	if config.Rules(gblock.Number()).IsCancun {
+		// EIP-1052 must be activated for backward compatibility on Kaia. But EIP-2929 is activated instead of it on Ethereum
+		gasChanges[vm.EXTCODEHASH] = params.WarmStorageReadCostEIP2929
+	}
+	vmConfig := vm.Config{Debug: true, Tracer: tracer, ComputationCostLimit: params.OpcodeComputationCostLimitInfinite}
+	prvKey, _ := crypto.GenerateKey()
+	engine := backend.NewBackendForTest(&backend.BackendOpts{
+		IstanbulConfig: istanbul.DefaultConfig,
+		Rewardbase:     common.Address{},
+		PrivateKey:     prvKey,
+		DB:             db,
+		NodeType:       common.CONSENSUSNODE,
+	})
+	chain, err := blockchain.NewBlockChain(db, nil, config, engine, vmConfig)
 	if err != nil {
 		return err
 	}

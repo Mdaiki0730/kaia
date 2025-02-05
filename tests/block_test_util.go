@@ -32,6 +32,7 @@ import (
 
 	"github.com/kaiachain/kaia/blockchain"
 	"github.com/kaiachain/kaia/blockchain/state"
+	"github.com/kaiachain/kaia/blockchain/system"
 	"github.com/kaiachain/kaia/blockchain/types"
 	"github.com/kaiachain/kaia/blockchain/types/account"
 	"github.com/kaiachain/kaia/blockchain/vm"
@@ -40,6 +41,10 @@ import (
 	"github.com/kaiachain/kaia/common/math"
 	"github.com/kaiachain/kaia/consensus"
 	"github.com/kaiachain/kaia/consensus/gxhash"
+	"github.com/kaiachain/kaia/consensus/istanbul"
+	istanbulBackend "github.com/kaiachain/kaia/consensus/istanbul/backend"
+	"github.com/kaiachain/kaia/crypto"
+	"github.com/kaiachain/kaia/log"
 	"github.com/kaiachain/kaia/params"
 	"github.com/kaiachain/kaia/rlp"
 	"github.com/kaiachain/kaia/storage/database"
@@ -177,6 +182,227 @@ func (e *eestEngine) applyHeader(h btHeader) {
 	e.gasLimit = h.GasLimit
 }
 
+var logger = log.NewModuleLogger(log.ConsensusIstanbulBackend)
+
+type eestBackend struct {
+	consensus.Istanbul
+	baseFee  *big.Int
+	gasLimit uint64
+}
+
+var _ consensus.Engine = &eestBackend{}
+
+// This is called inside blockchain.ApplyTransaction to manipulate the evm configuration and recreate the eth.
+func (eb *eestBackend) BeforeApplyMessage(evm *vm.EVM, msg *types.Transaction) {
+	// Change GasLimit to the one in the eth header
+	evm.Context.GasLimit = eb.gasLimit
+
+	if evm.ChainConfig().Rules(evm.Context.BlockNumber).IsCancun {
+		// EIP-1052 must be activated for backward compatibility on Kaia. But EIP-2929 is activated instead of it on Ethereum
+		vm.ChangeGasCostForTest(&evm.Config.JumpTable, vm.EXTCODEHASH, params.WarmStorageReadCostEIP2929)
+	}
+
+	// When istanbul is enabled, instrinsic gas is different from eth, so enable IsPrague to make them equal
+	r := evm.ChainConfig().Rules(evm.Context.BlockNumber)
+	if evm.ChainConfig().Rules(evm.Context.BlockNumber).IsIstanbul {
+		r.IsPrague = true
+	}
+	updatedIntrinsicGas, dataTokens, _ := types.IntrinsicGas(msg.Data(), msg.AccessList(), msg.AuthorizationList(), msg.To() == nil, r)
+	from, _ := msg.From()
+	msg = types.NewMessage(from, msg.To(), msg.Nonce(), msg.GetTxInternalData().GetAmount(), msg.Gas(), msg.GasPrice(), msg.GasFeeCap(), msg.GasTipCap(), msg.Data(), true, updatedIntrinsicGas, dataTokens, msg.AccessList(), msg.AuthorizationList())
+
+	// Gas prices are calculated in eth
+	evm.GasPrice, _ = calculateEthGasPrice(evm.ChainConfig().Rules(evm.Context.BlockNumber), msg.GasPrice(), eb.baseFee, msg.GasFeeCap(), msg.GasTipCap())
+}
+
+func (eb *eestBackend) Finalize(chain consensus.ChainReader, header *types.Header, state *state.StateDB, txs []*types.Transaction, receipts []*types.Receipt) (*types.Block, error) {
+	// We can assure that if the magma hard forked block should have the field of base fee
+	if chain.Config().IsMagmaForkEnabled(header.Number) {
+		if header.BaseFee == nil {
+			logger.Error("Magma hard forked block should have baseFee", "blockNum", header.Number.Uint64())
+			return nil, errors.New("Invalid Magma block without baseFee")
+		}
+	} else if header.BaseFee != nil {
+		logger.Error("A block before Magma hardfork shouldn't have baseFee", "blockNum", header.Number.Uint64())
+		return nil, consensus.ErrInvalidBaseFee
+	}
+
+	/*
+		These are not needed as the reward format is the same as eth.
+	*/
+	// if eb.chain != nil && eb.chain.Config().Istanbul.ProposerPolicy == uint64(istanbul.WeightedRandom) {
+	// 	// Determine and update Rewardbase when mining. When mining, state root is not yet determined and will be determined at the end of this Finalize below.
+	// 	if common.EmptyHash(header.Root) {
+	// 		// TODO-Kaia Let's redesign below logic and remove dependency between block reward and istanbul consensus.
+	// 		var (
+	// 			blockNum      = header.Number.Uint64()
+	// 			rewardAddress = eb.GetRewardAddress(blockNum, eb.address)
+	// 		)
+
+	// 		valSet, err := eb.GetValidatorSet(blockNum)
+	// 		if err != nil {
+	// 			return nil, err
+	// 		}
+
+	// 		var logMsg string
+	// 		if !valSet.Qualified().Contains(eb.address) || (rewardAddress == common.Address{}) {
+	// 			logMsg = "No reward address for nodeValidator. Use node's rewardbase."
+	// 		} else {
+	// 			// use reward address of current node.
+	// 			// only a block made by proposer will be accepted. However, due to round change any node can be the proposer of a block.
+	// 			// so need to write reward address of current node to receive reward when it becomes proposer.
+	// 			// if current node does not become proposer, the block will be abandoned
+	// 			header.Rewardbase = rewardAddress
+	// 			logMsg = "Use reward address for nodeValidator."
+	// 		}
+	// 		logger.Trace(logMsg, "header.Number", header.Number.Uint64(), "node address", eb.address, "rewardbase", header.Rewardbase)
+	// 	}
+	// }
+
+	/*
+		In test, ignore Finalize of consensusModule.
+	*/
+	// for _, module := range eb.consensusModules {
+	// 	if err := module.FinalizeHeader(header, state, txs, receipts); err != nil {
+	// 		return nil, err
+	// 	}
+	// }
+
+	// RebalanceTreasury can modify the global state (state),
+	// so the existing state db should be used to apply the rebalancing result.
+	// Only on the KIP-103 or KIP-160 hardfork block, the following logic should be executed
+	if chain.Config().IsKIP160ForkBlock(header.Number) || chain.Config().IsKIP103ForkBlock(header.Number) {
+		rebalanceResult, err := system.RebalanceTreasury(state, chain, header)
+		if err != nil {
+			logger.Error("failed to execute treasury rebalancing. State not changed", "err", err)
+		} else {
+			// Leave the memo in the log for later contract finalization
+			isKIP103 := chain.Config().IsKIP103ForkBlock(header.Number) // because memo format differs between KIP-103 and KIP-160
+			logger.Info("successfully executed treasury rebalancing", "memo", string(rebalanceResult.Memo(isKIP103)))
+		}
+	}
+
+	// The Registry contract are installed at RandaoCompatibleBlock with a KIP113 record
+	if chain.Config().IsRandaoForkBlock(header.Number) {
+		err := system.InstallRegistry(state, chain.Config().RandaoRegistry)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// Replace the Mainnet credit contract
+	if chain.Config().IsKaiaForkBlockParent(header.Number) {
+		if chain.Config().ChainID.Uint64() == params.MainnetNetworkId && state.GetCode(system.MainnetCreditAddr) != nil {
+			if err := state.SetCode(system.MainnetCreditAddr, system.MainnetCreditV2Code); err != nil {
+				return nil, err
+			}
+			logger.Info("Replaced CypressCredit with CypressCreditV2", "blockNum", header.Number.Uint64())
+		}
+	}
+
+	// Calculations for granting the same reward type as ETH
+	ethReward := common.Big0
+	for _, receipt := range receipts {
+		for _, tx := range txs {
+			if tx.Hash() != receipt.TxHash {
+				continue
+			}
+
+			ethGasPrice, _ := calculateEthGasPrice(chain.Config().Rules(header.Number), tx.GasPrice(), eb.baseFee, tx.GasFeeCap(), tx.GasTipCap())
+			ethReward = new(big.Int).Add(ethReward, calculateEthMiningReward(ethGasPrice, tx.GasFeeCap(), tx.GasTipCap(), eb.baseFee, receipt.GasUsed, chain.Config().Rules(header.Number)))
+		}
+	}
+
+	state.AddBalance(header.Rewardbase, ethReward)
+	header.Root = state.IntermediateRoot(true)
+
+	// Assemble and return the final block for sealing
+	return types.NewBlock(header, txs, receipts), nil
+}
+
+// If the block score is always 0, the block will not be written, so it is calculated in the same way as gxhash.
+func (eb *eestBackend) CalcBlockScore(chain consensus.ChainReader, time uint64, parent *types.Header) *big.Int {
+	return big.NewInt(1)
+}
+
+// The header created from eth data does not contain any extra data, so it is overridden with a function that does not perform validation.
+func (eb *eestBackend) VerifyHeaders(chain consensus.ChainReader, headers []*types.Header, seals []bool) (chan<- struct{}, <-chan error) {
+	abort := make(chan struct{})
+	results := make(chan error, len(headers))
+	go func() {
+		errored := false
+		for i, header := range headers {
+			var err error
+			if errored { // If errored once in the batch, skip the rest
+				err = consensus.ErrUnknownAncestor
+			} else {
+				err = eb.verifyHeader(chain, header, headers[:i])
+			}
+
+			if err != nil {
+				errored = true
+			}
+
+			select {
+			case <-abort:
+				return
+			case results <- err:
+			}
+		}
+	}()
+	return abort, results
+}
+
+func (eb *eestBackend) VerifyHeader(chain consensus.ChainReader, header *types.Header, seal bool) error {
+	return nil
+}
+
+func (eb *eestBackend) verifyHeader(chain consensus.ChainReader, header *types.Header, parents []*types.Header) error {
+	return nil
+}
+
+// The header created from eth data does not contain any extra data, so it is overridden with a function that does not perform validation.
+func (eb *eestBackend) PreprocessHeaderVerification(headers []*types.Header) (chan<- struct{}, <-chan error) {
+	abort := make(chan struct{})
+	results := make(chan error, 2048)
+	go func() {
+		errored := false
+		for _, header := range headers {
+			var err error
+			if errored { // If errored once in the batch, skip the rest
+				err = consensus.ErrUnknownAncestor
+			} else {
+				err = eb.computeSignatureAddrs(header)
+			}
+
+			if err != nil {
+				errored = true
+			}
+
+			select {
+			case <-abort:
+				return
+			case results <- err:
+			}
+		}
+	}()
+	return abort, results
+}
+
+func (eb *eestBackend) computeSignatureAddrs(header *types.Header) error {
+	return nil
+}
+
+// Since the eth header does not contain extraData, it returns the test author.
+func (eb *eestBackend) Author(header *types.Header) (common.Address, error) {
+	return params.AuthorAddressForTesting, nil
+}
+
+func (eb *eestBackend) applyHeader(h btHeader) {
+	eb.baseFee = h.BaseFee
+	eb.gasLimit = h.GasLimit
+}
+
 func (t *BlockTest) Run() error {
 	config, ok := Forks[t.json.Network]
 	if !ok {
@@ -217,7 +443,21 @@ func (t *BlockTest) Run() error {
 	}
 
 	tracer := vm.NewStructLogger(nil)
-	chain, err := blockchain.NewBlockChain(db, nil, config, &eestEngine{Gxhash: gxhash.NewShared()}, vm.Config{Debug: true, Tracer: tracer, ComputationCostLimit: params.OpcodeComputationCostLimitInfinite})
+	key, _ := crypto.GenerateKey()
+	istanbulConfig := &istanbul.Config{
+		Epoch:          config.Istanbul.Epoch,
+		ProposerPolicy: istanbul.ProposerPolicy(config.Istanbul.ProposerPolicy),
+		SubGroupSize:   config.Istanbul.SubGroupSize,
+		BlockPeriod:    istanbul.DefaultConfig.BlockPeriod,
+		Timeout:        10000,
+	}
+	istanbulEngine := &eestBackend{Istanbul: istanbulBackend.New(&istanbulBackend.BackendOpts{
+		IstanbulConfig: istanbulConfig,
+		PrivateKey:     key,
+		DB:             db,
+		NodeType:       common.CONSENSUSNODE,
+	})}
+	chain, err := blockchain.NewBlockChain(db, nil, config, istanbulEngine, vm.Config{Debug: true, Tracer: tracer, ComputationCostLimit: params.OpcodeComputationCostLimitInfinite})
 	if err != nil {
 		return err
 	}

@@ -670,7 +670,49 @@ func (env *Task) commitTransactions(mux *event.TypeMux, txs *types.TransactionsB
 	}
 }
 
+func (env *Task) commitBundleTransaction(tx *types.Transaction, bundle bundle, lastSnapshot int, executedTxInBundle *[]*types.Transaction, bundleReceipts *[]*types.Receipt, bc BlockChain, rewardbase common.Address, vmConfig *vm.Config) (error, []*types.Log) {
+	receipt, _, err := bc.ApplyTransaction(env.config, &rewardbase, env.state, env.header, tx, &env.header.GasUsed, vmConfig)
+	if err != nil {
+		if err != vm.ErrInsufficientBalance && err != vm.ErrTotalTimeLimitReached {
+			tx.MarkUnexecutable(true)
+		}
+		env.state.RevertToSnapshot(lastSnapshot)
+		return err, nil
+	}
+
+	if len(bundle.BundleTxs) == 0 { // If the tx is not included in the bundle, just add it to env.txs.
+		env.txs = append(env.txs, tx)
+		env.receipts = append(env.receipts, receipt)
+	} else if bundle.BundleTxs[len(bundle.BundleTxs)-1].Equal(tx) { // For txs included in a bundle, if the tx is the last in the bundle, it will be added all at once.
+		env.txs = append(env.txs, *executedTxInBundle...)
+		env.receipts = append(env.receipts, *bundleReceipts...)
+		*executedTxInBundle = []*types.Transaction{}
+		*bundleReceipts = []*types.Receipt{}
+	} else { // If the tx is included in a bundle and is not the last tx in the bundle, the result is retained.
+		*executedTxInBundle = append(*executedTxInBundle, tx)
+		*bundleReceipts = append(*bundleReceipts, receipt)
+	}
+	return nil, receipt.Logs
+}
+
 func (env *Task) ApplyTransactions(txs *types.TransactionsByPriceAndNonce, bc BlockChain, rewardbase common.Address) []*types.Log {
+	arrayTxs := arrayfy(*txs)
+	bundles := []bundle{}
+	tmpTxs := []*types.Transaction{}
+
+	// Bundle each 2 tx
+	// This is bundle for test. This needs to be replaced by per-module bundling.
+	for _, tx := range arrayTxs {
+		if len(tmpTxs) == 0 {
+			tmpTxs = append(tmpTxs, tx)
+		} else {
+			tmpTxs = append(tmpTxs, tx)
+			newBundle := bundle{tmpTxs}
+			bundles = append(bundles, newBundle)
+			tmpTxs = []*types.Transaction{}
+		}
+	}
+
 	var coalescedLogs []*types.Log
 
 	// Limit the execution time of all transactions in a block
@@ -719,6 +761,9 @@ func (env *Task) ApplyTransactions(txs *types.TransactionsByPriceAndNonce, bc Bl
 	var numTxsNonceTooLow int64 = 0
 	var numTxsNonceTooHigh int64 = 0
 	var numTxsGasLimitReached int64 = 0
+	var lastSnapshot int
+	var executedTxInBundle *[]*types.Transaction
+	var bundleReceipts *[]*types.Receipt
 CommitTransactionLoop:
 	for atomic.LoadInt32(&abort) == 0 {
 		// Retrieve the next transaction and abort if all done
@@ -750,25 +795,59 @@ CommitTransactionLoop:
 		// Start executing the transaction
 		env.state.SetTxContext(tx.Hash(), common.Hash{}, env.tcount)
 
-		err, logs := env.commitTransaction(tx, bc, rewardbase, vmConfig)
+		// Verify that tx is included in the bundle
+		var targetBundle bundle
+		remainTxsInBundle := 0
+		for _, bundle := range bundles {
+			for i, bundledTx := range bundle.BundleTxs {
+				if tx.Equal(bundledTx) {
+					targetBundle = bundle
+					remainTxsInBundle = len(bundle.BundleTxs) - i - 1
+				}
+			}
+		}
+
+		// Take a snap if the bundle does not exist, or if it does exist, take the snap if it is the first tx in the bundle.
+		if len(targetBundle.BundleTxs) == 0 || (len(targetBundle.BundleTxs) != 0 && targetBundle.BundleTxs[0].Equal(tx)) {
+			lastSnapshot = env.state.Snapshot()
+		}
+		err, logs := env.commitBundleTransaction(tx, targetBundle, lastSnapshot, executedTxInBundle, bundleReceipts, bc, rewardbase, vmConfig)
 		switch err {
 		case blockchain.ErrGasLimitReached:
 			// Pop the current out-of-gas transaction without shifting in the next from the account
 			logger.Trace("Gas limit exceeded for current block", "sender", from)
 			numTxsGasLimitReached++
-			txs.Pop()
+			if len(targetBundle.BundleTxs) != 0 {
+				for i := 0; i < remainTxsInBundle; i++ {
+					txs.Pop()
+				}
+			} else {
+				txs.Pop()
+			}
 
 		case blockchain.ErrNonceTooLow:
 			// New head notification data race between the transaction pool and miner, shift
 			logger.Trace("Skipping transaction with low nonce", "sender", from, "nonce", tx.Nonce())
 			numTxsNonceTooLow++
-			txs.Shift()
+			if len(targetBundle.BundleTxs) != 0 {
+				for i := 0; i < remainTxsInBundle; i++ {
+					txs.Shift()
+				}
+			} else {
+				txs.Shift()
+			}
 
 		case blockchain.ErrNonceTooHigh:
 			// Reorg notification data race between the transaction pool and miner, skip account =
 			logger.Trace("Skipping account with high nonce", "sender", from, "nonce", tx.Nonce())
 			numTxsNonceTooHigh++
-			txs.Pop()
+			if len(targetBundle.BundleTxs) != 0 {
+				for i := 0; i < remainTxsInBundle; i++ {
+					txs.Shift()
+				}
+			} else {
+				txs.Shift()
+			}
 
 		case vm.ErrTotalTimeLimitReached:
 			logger.Warn("Transaction aborted due to time limit", "hash", tx.Hash().String())
@@ -783,7 +862,13 @@ CommitTransactionLoop:
 		case blockchain.ErrTxTypeNotSupported:
 			// Pop the unsupported transaction without shifting in the next from the account
 			logger.Trace("Skipping unsupported transaction type", "sender", from, "type", tx.Type())
-			txs.Pop()
+			if len(targetBundle.BundleTxs) != 0 {
+				for i := 0; i < remainTxsInBundle; i++ {
+					txs.Pop()
+				}
+			} else {
+				txs.Pop()
+			}
 
 		case nil:
 			// Everything ok, collect the logs and shift in the next transaction from the same account
@@ -796,7 +881,13 @@ CommitTransactionLoop:
 			// nonce-too-high clause will prevent us from executing in vain).
 			logger.Warn("Transaction failed, account skipped", "sender", from, "hash", tx.Hash().String(), "err", err)
 			strangeErrorTxsCounter.Inc(1)
-			txs.Shift()
+			if len(targetBundle.BundleTxs) != 0 {
+				for i := 0; i < remainTxsInBundle; i++ {
+					txs.Shift()
+				}
+			} else {
+				txs.Shift()
+			}
 		}
 	}
 

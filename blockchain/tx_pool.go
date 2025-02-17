@@ -617,6 +617,12 @@ func (pool *TxPool) Pending() (map[common.Address]types.Transactions, error) {
 	for addr, list := range pool.pending {
 		pending[addr] = list.Flatten()
 	}
+
+	// This is temporary condition for tx bundle PoC
+	// Wait 6 tx and, when tx6 store, execute them
+	if len(pending) != 6 {
+		return map[common.Address]types.Transactions{}, nil
+	}
 	return pending, nil
 }
 

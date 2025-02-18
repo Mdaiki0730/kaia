@@ -670,9 +670,9 @@ func (env *Task) commitTransactions(mux *event.TypeMux, txs *types.TransactionsB
 	}
 }
 
-func (env *Task) commitBundleTransaction(tx *types.Transaction, bundle bundle, lastSnapshot int, executedTxInBundle *[]*types.Transaction, bundleReceipts *[]*types.Receipt, bc BlockChain, rewardbase common.Address, vmConfig *vm.Config) (error, []*types.Log) {
+func (env *Task) commitBundleTransaction(tx *types.Transaction, bundle bundle, lastSnapshot int, executedTxsInBundle *[]*types.Transaction, receiptsInBundle *[]*types.Receipt, bc BlockChain, rewardbase common.Address, vmConfig *vm.Config) (error, []*types.Log) {
 	receipt, _, err := bc.ApplyTransaction(env.config, &rewardbase, env.state, env.header, tx, &env.header.GasUsed, vmConfig)
-	if err != nil {
+	if err != nil || tx.Nonce() == 3 { // Tx4 is assumed the tx to revert
 		if err != vm.ErrInsufficientBalance && err != vm.ErrTotalTimeLimitReached {
 			tx.MarkUnexecutable(true)
 		}
@@ -684,19 +684,22 @@ func (env *Task) commitBundleTransaction(tx *types.Transaction, bundle bundle, l
 		env.txs = append(env.txs, tx)
 		env.receipts = append(env.receipts, receipt)
 	} else if bundle.BundleTxs[len(bundle.BundleTxs)-1].Equal(tx) { // For txs included in a bundle, if the tx is the last in the bundle, it will be added all at once.
-		env.txs = append(env.txs, *executedTxInBundle...)
-		env.receipts = append(env.receipts, *bundleReceipts...)
-		*executedTxInBundle = []*types.Transaction{}
-		*bundleReceipts = []*types.Receipt{}
+		*executedTxsInBundle = append(*executedTxsInBundle, tx)
+		*receiptsInBundle = append(*receiptsInBundle, receipt)
+		env.txs = append(env.txs, *executedTxsInBundle...)
+		env.receipts = append(env.receipts, *receiptsInBundle...)
+		*executedTxsInBundle = []*types.Transaction{}
+		*receiptsInBundle = []*types.Receipt{}
 	} else { // If the tx is included in a bundle and is not the last tx in the bundle, the result is retained.
-		*executedTxInBundle = append(*executedTxInBundle, tx)
-		*bundleReceipts = append(*bundleReceipts, receipt)
+		*executedTxsInBundle = append(*executedTxsInBundle, tx)
+		*receiptsInBundle = append(*receiptsInBundle, receipt)
 	}
 	return nil, receipt.Logs
 }
 
 func (env *Task) ApplyTransactions(txs *types.TransactionsByPriceAndNonce, bc BlockChain, rewardbase common.Address) []*types.Log {
-	arrayTxs := arrayfy(*txs)
+	txsCopy := txs.DeepCopy()
+	arrayTxs := arrayify(txsCopy)
 	bundles := []bundle{}
 	tmpTxs := []*types.Transaction{}
 
@@ -762,8 +765,9 @@ func (env *Task) ApplyTransactions(txs *types.TransactionsByPriceAndNonce, bc Bl
 	var numTxsNonceTooHigh int64 = 0
 	var numTxsGasLimitReached int64 = 0
 	var lastSnapshot int
-	var executedTxInBundle *[]*types.Transaction
-	var bundleReceipts *[]*types.Receipt
+	var executedTxsInBundle []*types.Transaction
+	var receiptsInBundle []*types.Receipt
+	var logsInBundle []*types.Log
 CommitTransactionLoop:
 	for atomic.LoadInt32(&abort) == 0 {
 		// Retrieve the next transaction and abort if all done
@@ -811,7 +815,7 @@ CommitTransactionLoop:
 		if len(targetBundle.BundleTxs) == 0 || (len(targetBundle.BundleTxs) != 0 && targetBundle.BundleTxs[0].Equal(tx)) {
 			lastSnapshot = env.state.Snapshot()
 		}
-		err, logs := env.commitBundleTransaction(tx, targetBundle, lastSnapshot, executedTxInBundle, bundleReceipts, bc, rewardbase, vmConfig)
+		err, logs := env.commitBundleTransaction(tx, targetBundle, lastSnapshot, &executedTxsInBundle, &receiptsInBundle, bc, rewardbase, vmConfig)
 		switch err {
 		case blockchain.ErrGasLimitReached:
 			// Pop the current out-of-gas transaction without shifting in the next from the account
@@ -872,8 +876,19 @@ CommitTransactionLoop:
 
 		case nil:
 			// Everything ok, collect the logs and shift in the next transaction from the same account
-			coalescedLogs = append(coalescedLogs, logs...)
-			env.tcount++
+			if len(targetBundle.BundleTxs) != 0 {
+				if remainTxsInBundle == 0 {
+					coalescedLogs = append(coalescedLogs, logsInBundle...)
+					for i := 0; i < len(targetBundle.BundleTxs); i++ {
+						env.tcount++
+					}
+				} else {
+					logsInBundle = append(logsInBundle, logs...)
+				}
+			} else {
+				coalescedLogs = append(coalescedLogs, logs...)
+				env.tcount++
+			}
 			txs.Shift()
 
 		default:

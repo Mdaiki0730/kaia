@@ -9,7 +9,7 @@ type bundle struct {
 	// TargetTxHash common.Hash   // BundleTxs is placed AFTER the target tx. If empty hash, it is placed at the very front.
 }
 
-func arrayfy(txs types.TransactionsByPriceAndNonce) types.Transactions {
+func arrayify(txs *types.TransactionsByPriceAndNonce) types.Transactions {
 	arrayTxs := types.Transactions{}
 	for {
 		tx := txs.Peek()

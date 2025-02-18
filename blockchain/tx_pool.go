@@ -618,11 +618,6 @@ func (pool *TxPool) Pending() (map[common.Address]types.Transactions, error) {
 		pending[addr] = list.Flatten()
 	}
 
-	// This is temporary condition for tx bundle PoC
-	// Wait 6 tx and, when tx6 store, execute them
-	if len(pending) != 6 {
-		return map[common.Address]types.Transactions{}, nil
-	}
 	return pending, nil
 }
 
@@ -1434,7 +1429,7 @@ func (pool *TxPool) promoteExecutables(accounts []common.Address) {
 	// Iterate over all accounts and promote any executable transactions
 	for _, addr := range accounts {
 		list := pool.queue[addr]
-		if list == nil {
+		if list == nil || list.Len() < 6 {
 			continue // Just in case someone calls with a non existing account
 		}
 		// Drop all transactions that are deemed too old (low nonce)

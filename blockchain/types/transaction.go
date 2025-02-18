@@ -1055,6 +1055,24 @@ func (t *TransactionsByPriceAndNonce) Peek() *Transaction {
 	return t.heads[0].tx
 }
 
+func (t *TransactionsByPriceAndNonce) DeepCopy() *TransactionsByPriceAndNonce {
+	if t == nil {
+		return nil
+	}
+	newHeads := txByPriceAndTime{}
+	newTxs := make(map[common.Address]Transactions)
+	for k, v := range t.txs {
+		newTxs[k] = v
+	}
+
+	return &TransactionsByPriceAndNonce{
+		txs:     newTxs,
+		heads:   append(newHeads, t.heads...),
+		signer:  t.signer,
+		baseFee: new(big.Int).Set(t.baseFee),
+	}
+}
+
 // Shift replaces the current best head with the next one from the same account.
 func (t *TransactionsByPriceAndNonce) Shift() {
 	if len(t.heads) == 0 {

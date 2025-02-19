@@ -670,13 +670,22 @@ func (env *Task) commitTransactions(mux *event.TypeMux, txs *types.TransactionsB
 	}
 }
 
-func (env *Task) commitBundleTransaction(tx *types.Transaction, bundle bundle, lastSnapshot int, executedTxsInBundle *[]*types.Transaction, receiptsInBundle *[]*types.Receipt, bc BlockChain, rewardbase common.Address, vmConfig *vm.Config) (error, []*types.Log) {
+func (env *Task) commitBundleTransaction(tx *types.Transaction, bundle bundle, lastSnapshot *state.StateDB, executedTxsInBundle *[]*types.Transaction, receiptsInBundle *[]*types.Receipt, bc BlockChain, rewardbase common.Address, vmConfig *vm.Config) (error, []*types.Log) {
 	receipt, _, err := bc.ApplyTransaction(env.config, &rewardbase, env.state, env.header, tx, &env.header.GasUsed, vmConfig)
-	if err != nil || tx.Nonce() == 3 { // Tx4 is assumed the tx to revert
+	if err != nil {
 		if err != vm.ErrInsufficientBalance && err != vm.ErrTotalTimeLimitReached {
 			tx.MarkUnexecutable(true)
+			for _, executedTx := range *executedTxsInBundle {
+				executedTx.MarkUnexecutable(true)
+			}
 		}
-		env.state.RevertToSnapshot(lastSnapshot)
+		*env.state = *lastSnapshot
+
+		for _, receipt := range *receiptsInBundle {
+			env.header.GasUsed -= receipt.GasUsed
+		}
+		*executedTxsInBundle = []*types.Transaction{}
+		*receiptsInBundle = []*types.Receipt{}
 		return err, nil
 	}
 
@@ -764,7 +773,7 @@ func (env *Task) ApplyTransactions(txs *types.TransactionsByPriceAndNonce, bc Bl
 	var numTxsNonceTooLow int64 = 0
 	var numTxsNonceTooHigh int64 = 0
 	var numTxsGasLimitReached int64 = 0
-	var lastSnapshot int
+	var lastSnapshot *state.StateDB
 	var executedTxsInBundle []*types.Transaction
 	var receiptsInBundle []*types.Receipt
 	var logsInBundle []*types.Log
@@ -806,14 +815,14 @@ CommitTransactionLoop:
 			for i, bundledTx := range bundle.BundleTxs {
 				if tx.Equal(bundledTx) {
 					targetBundle = bundle
-					remainTxsInBundle = len(bundle.BundleTxs) - i - 1
+					remainTxsInBundle = len(bundle.BundleTxs) - i
 				}
 			}
 		}
 
 		// Take a snap if the bundle does not exist, or if it does exist, take the snap if it is the first tx in the bundle.
 		if len(targetBundle.BundleTxs) == 0 || (len(targetBundle.BundleTxs) != 0 && targetBundle.BundleTxs[0].Equal(tx)) {
-			lastSnapshot = env.state.Snapshot()
+			lastSnapshot = env.state.Copy()
 		}
 		err, logs := env.commitBundleTransaction(tx, targetBundle, lastSnapshot, &executedTxsInBundle, &receiptsInBundle, bc, rewardbase, vmConfig)
 		switch err {
@@ -847,10 +856,10 @@ CommitTransactionLoop:
 			numTxsNonceTooHigh++
 			if len(targetBundle.BundleTxs) != 0 {
 				for i := 0; i < remainTxsInBundle; i++ {
-					txs.Shift()
+					txs.Pop()
 				}
 			} else {
-				txs.Shift()
+				txs.Pop()
 			}
 
 		case vm.ErrTotalTimeLimitReached:

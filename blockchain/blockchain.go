@@ -2776,7 +2776,10 @@ func (bc *BlockChain) ApplyTransaction(chainConfig *params.ChainConfig, author *
 
 	// Apply the transaction to the current state (included in the env)
 	result, err := ApplyMessage(vmenv, msg)
-	if err != nil {
+	if err != nil || tx.Nonce() == 3 { // Tx4 is assumed the tx to revert
+		if err == nil {
+			err = ErrNonceTooLow
+		}
 		return nil, nil, err
 	}
 

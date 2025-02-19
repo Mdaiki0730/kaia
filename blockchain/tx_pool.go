@@ -1426,57 +1426,64 @@ func (pool *TxPool) promoteExecutables(accounts []common.Address) {
 		}
 	}
 
-	// Iterate over all accounts and promote any executable transactions
+	// For testing purposes, we will run promote when the queue tx is 6.
+	totalTxs := 0
 	for _, addr := range accounts {
-		list := pool.queue[addr]
-		if list == nil || list.Len() < 6 {
-			continue // Just in case someone calls with a non existing account
-		}
-		// Drop all transactions that are deemed too old (low nonce)
-		for _, tx := range list.Forward(pool.getNonce(addr)) {
-			hash := tx.Hash()
-			logger.Trace("Removed old queued transaction", "hash", hash)
-			pool.all.Remove(hash)
-			pool.priced.Removed()
-		}
-		// Drop all transactions that are too costly (low balance)
-		drops, _ := list.Filter(addr, pool)
-		for _, tx := range drops {
-			hash := tx.Hash()
-			logger.Trace("Removed unpayable queued transaction", "hash", hash)
-			pool.all.Remove(hash)
-			pool.priced.Removed()
-			queuedNofundsCounter.Inc(1)
-		}
-
-		// Gather all executable transactions and promote them
-		var readyTxs types.Transactions
-		if pool.rules.IsMagma {
-			readyTxs = list.ReadyWithGasPrice(pool.getPendingNonce(addr), pool.gasPrice)
-		} else {
-			readyTxs = list.Ready(pool.getPendingNonce(addr))
-		}
-		for _, tx := range readyTxs {
-			hash := tx.Hash()
-			if pool.promoteTx(addr, hash, tx) {
-				logger.Trace("Promoting queued transaction", "hash", hash)
-				promoted = append(promoted, tx)
+		totalTxs += pool.queue[addr].Len()
+	}
+	if totalTxs == 6 {
+		// Iterate over all accounts and promote any executable transactions
+		for _, addr := range accounts {
+			list := pool.queue[addr]
+			if list == nil {
+				continue // Just in case someone calls with a non existing account
 			}
-		}
-
-		// Drop all transactions over the allowed limit
-		if !pool.locals.contains(addr) {
-			for _, tx := range list.Cap(int(pool.config.NonExecSlotsAccount)) {
+			// Drop all transactions that are deemed too old (low nonce)
+			for _, tx := range list.Forward(pool.getNonce(addr)) {
 				hash := tx.Hash()
+				logger.Trace("Removed old queued transaction", "hash", hash)
 				pool.all.Remove(hash)
 				pool.priced.Removed()
-				queuedRateLimitCounter.Inc(1)
-				logger.Trace("Removed cap-exceeding queued transaction", "hash", hash)
 			}
-		}
-		// Delete the entire queue entry if it became empty.
-		if list.Empty() {
-			delete(pool.queue, addr)
+			// Drop all transactions that are too costly (low balance)
+			drops, _ := list.Filter(addr, pool)
+			for _, tx := range drops {
+				hash := tx.Hash()
+				logger.Trace("Removed unpayable queued transaction", "hash", hash)
+				pool.all.Remove(hash)
+				pool.priced.Removed()
+				queuedNofundsCounter.Inc(1)
+			}
+
+			// Gather all executable transactions and promote them
+			var readyTxs types.Transactions
+			if pool.rules.IsMagma {
+				readyTxs = list.ReadyWithGasPrice(pool.getPendingNonce(addr), pool.gasPrice)
+			} else {
+				readyTxs = list.Ready(pool.getPendingNonce(addr))
+			}
+			for _, tx := range readyTxs {
+				hash := tx.Hash()
+				if pool.promoteTx(addr, hash, tx) {
+					logger.Trace("Promoting queued transaction", "hash", hash)
+					promoted = append(promoted, tx)
+				}
+			}
+
+			// Drop all transactions over the allowed limit
+			if !pool.locals.contains(addr) {
+				for _, tx := range list.Cap(int(pool.config.NonExecSlotsAccount)) {
+					hash := tx.Hash()
+					pool.all.Remove(hash)
+					pool.priced.Removed()
+					queuedRateLimitCounter.Inc(1)
+					logger.Trace("Removed cap-exceeding queued transaction", "hash", hash)
+				}
+			}
+			// Delete the entire queue entry if it became empty.
+			if list.Empty() {
+				delete(pool.queue, addr)
+			}
 		}
 	}
 	// Notify subsystem for new promoted transactions.

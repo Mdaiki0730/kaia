@@ -2283,7 +2283,9 @@ func TestEIP7702(t *testing.T) {
 	gspec := &Genesis{
 		Config: params.TestChainConfig.Copy(),
 		Alloc: GenesisAlloc{
-			addr1: {Balance: funds},
+			addr1: {Balance: funds, Storage: map[common.Hash]common.Hash{
+				common.Hash{}: common.Hash{1},
+			}},
 			addr2: {Balance: funds},
 			// The address 0xAAAA sstores 1 into slot 2.
 			aa: {
@@ -2380,6 +2382,9 @@ func TestEIP7702(t *testing.T) {
 	}
 	if vmVersion, ok := state.GetVmVersion(addr1); !(vmVersion == params.VmVersion1 && ok) {
 		t.Fatalf("addr1 code info incorrect: got %v, want %v", vmVersion, params.VmVersion1)
+	}
+	if !bytes.Equal(state.GetState(addr1, common.Hash{}).Bytes(), common.Hash{1}.Bytes()) {
+		t.Fatalf("addr1 storage info incorrect: got %v, want %v", state.GetState(addr1, common.Hash{}), common.Hash{1})
 	}
 
 	code, want = state.GetCode(addr2), types.AddressToDelegation(auth2.Address)

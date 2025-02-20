@@ -267,8 +267,8 @@ func generateTrieRoot(it Iterator, accountHash common.Hash, generatorFn trieGene
 				}
 				acc := serializer.GetAccount()
 				go func(hash common.Hash) {
-					contract, ok := acc.(*account.SmartContractAccount)
-					if !ok {
+					contract := account.GetProgramAccount(acc)
+					if contract == nil {
 						results <- nil
 						return
 					}

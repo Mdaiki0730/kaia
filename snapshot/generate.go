@@ -650,8 +650,8 @@ func (dl *diskLayer) generate(stats *generatorStats) {
 		}
 		// If the iterated account is the contract, create a further loop to
 		// verify or regenerate the contract storage.
-		contractAcc, ok := acc.(*account.SmartContractAccount)
-		if !ok {
+		contractAcc := account.GetProgramAccount(acc)
+		if contractAcc == nil {
 			// If the root is empty, we still need to ensure that any previous snapshot
 			// storage values are cleared
 			// TODO: investigate if this can be avoided, this will be very costly since it

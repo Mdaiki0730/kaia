@@ -267,7 +267,9 @@ func (bcdata *BCData) MineABlock(transactions types.Transactions, signer types.S
 	// Apply the set of transactions
 	start = time.Now()
 	task := work.NewTask(bcdata.bc.Config(), signer, statedb, header)
+	fmt.Println("Start ApplyTransactions")
 	task.ApplyTransactions(txset, bcdata.bc, *bcdata.rewardBase, txBundlingModules, builderModule)
+	fmt.Println("End ApplyTransactions")
 	newtxs := task.Transactions()
 	receipts := task.Receipts()
 	prof.Profile("mine_ApplyTransactions", time.Now().Sub(start))

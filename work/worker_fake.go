@@ -34,6 +34,7 @@ func NewFakeWorker() *FakeWorker {
 	return &FakeWorker{}
 }
 
+<<<<<<< HEAD
 func (*FakeWorker) Start()                                                       {}
 func (*FakeWorker) Stop()                                                        {}
 func (*FakeWorker) Register(Agent)                                               {}
@@ -44,3 +45,14 @@ func (*FakeWorker) Pending() (*types.Block, *state.StateDB)                     
 func (*FakeWorker) PendingBlock() *types.Block                                   { return nil }
 func (*FakeWorker) RegisterExecutionModule(modules ...kaiax.ExecutionModule)     {}
 func (*FakeWorker) RegisterTxBundlingModule(modules ...builder.TxBundlingModule) {}
+=======
+func (*FakeWorker) Start()                                                   {}
+func (*FakeWorker) Stop()                                                    {}
+func (*FakeWorker) Register(Agent)                                           {}
+func (*FakeWorker) Mining() bool                                             { return false }
+func (*FakeWorker) HashRate() (tot int64)                                    { return 0 }
+func (*FakeWorker) SetExtra([]byte) error                                    { return nil }
+func (*FakeWorker) Pending() (*types.Block, types.Receipts, *state.StateDB)  { return nil, nil, nil }
+func (*FakeWorker) PendingBlock() *types.Block                               { return nil }
+func (*FakeWorker) RegisterExecutionModule(modules ...kaiax.ExecutionModule) {}
+>>>>>>> dev

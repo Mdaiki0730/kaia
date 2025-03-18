@@ -86,7 +86,7 @@ func (a *AccountKeyPickerForTest) Exist(addr common.Address) bool {
 	return a.AddrKeyMap[addr] != nil
 }
 
-func makeTx(t *testing.T, privKey *ecdsa.PrivateKey, nonce uint64, to common.Address, amount *big.Int, gasLimit uint64, gasPrice *big.Int, data []byte) *types.Transaction {
+func makeTx(t *testing.T, privKey *ecdsa.PrivateKey, nonce uint64, to common.Address, amount *big.Int, gasLimit uint64, gasPrice *big.Int, data []byte, chainId *big.Int) *types.Transaction {
 	if privKey == nil {
 		var err error
 		privKey, err = crypto.GenerateKey()
@@ -98,7 +98,10 @@ func makeTx(t *testing.T, privKey *ecdsa.PrivateKey, nonce uint64, to common.Add
 	}
 	p.SetKey(addr, accountkey.NewAccountKeyLegacy())
 
-	signer := types.LatestSignerForChainID(big.NewInt(1))
+	if chainId == nil {
+		chainId = common.Big1
+	}
+	signer := types.LatestSignerForChainID(chainId)
 	tx := types.NewTransaction(nonce, to, amount, gasLimit, gasPrice, data)
 	tx, err := types.SignTx(tx, signer, privKey)
 	require.NoError(t, err)
@@ -106,7 +109,7 @@ func makeTx(t *testing.T, privKey *ecdsa.PrivateKey, nonce uint64, to common.Add
 	return tx
 }
 
-func makeApproveTx(t *testing.T, privKey *ecdsa.PrivateKey, nonce uint64, approveArgs ApproveArgs) *types.Transaction {
+func MakeApproveTx(t *testing.T, privKey *ecdsa.PrivateKey, nonce uint64, approveArgs ApproveArgs, chainId *big.Int) *types.Transaction {
 	var err error
 	if privKey == nil {
 		privKey, err = crypto.GenerateKey()
@@ -116,12 +119,12 @@ func makeApproveTx(t *testing.T, privKey *ecdsa.PrivateKey, nonce uint64, approv
 	data := append([]byte{}, common.Hex2Bytes("095ea7b3")...)
 	data = append(data, common.Hex2BytesFixed(hex.EncodeToString(approveArgs.Spender.Bytes()), 32)...)
 	data = append(data, common.Hex2BytesFixed(hex.EncodeToString(approveArgs.Amount.Bytes()), 32)...)
-	approveTx := makeTx(t, privKey, nonce, common.HexToAddress("0xabcd"), big.NewInt(0), 1000000, big.NewInt(1), data)
+	approveTx := makeTx(t, privKey, nonce, common.HexToAddress("0xabcd"), big.NewInt(0), 1000000, big.NewInt(1), data, chainId)
 
 	return approveTx
 }
 
-func makeSwapTx(t *testing.T, privKey *ecdsa.PrivateKey, nonce uint64, swapArgs SwapArgs) *types.Transaction {
+func MakeSwapTx(t *testing.T, privKey *ecdsa.PrivateKey, nonce uint64, swapArgs SwapArgs, chainId *big.Int) *types.Transaction {
 	var err error
 	if privKey == nil {
 		privKey, err = crypto.GenerateKey()
@@ -133,7 +136,7 @@ func makeSwapTx(t *testing.T, privKey *ecdsa.PrivateKey, nonce uint64, swapArgs 
 	data = append(data, common.Hex2BytesFixed(hex.EncodeToString(swapArgs.AmountIn.Bytes()), 32)...)
 	data = append(data, common.Hex2BytesFixed(hex.EncodeToString(swapArgs.MinAmountOut.Bytes()), 32)...)
 	data = append(data, common.Hex2BytesFixed(hex.EncodeToString(swapArgs.AmountRepay.Bytes()), 32)...)
-	swapTx := makeTx(t, privKey, nonce, common.HexToAddress("0x1234"), big.NewInt(0), 1000000, big.NewInt(1), data)
+	swapTx := makeTx(t, privKey, nonce, common.HexToAddress("0x1234"), big.NewInt(0), 1000000, big.NewInt(1), data, chainId)
 
 	return swapTx
 }

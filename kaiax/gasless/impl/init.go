@@ -61,6 +61,14 @@ func (g *GaslessModule) Init(opts *InitOpts) error {
 	return nil
 }
 
+func (g *GaslessModule) UpdateRouter(router common.Address) {
+	g.swapRouters[router] = true
+}
+
+func (g *GaslessModule) UpdateAllowedToken(token common.Address) {
+	g.allowedTokens[token] = true
+}
+
 func (g *GaslessModule) Start() error {
 	return nil
 }

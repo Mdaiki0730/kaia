@@ -148,7 +148,8 @@ type CN struct {
 
 	components []interface{}
 
-	govModule gov.GovModule
+	govModule     gov.GovModule
+	gaslessModule *gasless_impl.GaslessModule
 
 	// kaiax modules
 	baseModules    []kaiax.BaseModule
@@ -553,6 +554,9 @@ func (s *CN) SetupKaiaxModules(ctx *node.ServiceContext, mValset valset.ValsetMo
 		return err
 	}
 
+	// tmp
+	s.gaslessModule = mGasless
+
 	// Register modules to respective components
 	// TODO-kaiax: Organize below lines.
 	s.RegisterBaseModules(s.stakingModule, mReward, mSupply, s.govModule, mValset, mRandao)
@@ -569,6 +573,10 @@ func (s *CN) SetupKaiaxModules(ctx *node.ServiceContext, mValset valset.ValsetMo
 	s.protocolManager.RegisterStakingModule(s.stakingModule)
 
 	return nil
+}
+
+func (s *CN) GetGaslessModule() *gasless_impl.GaslessModule {
+	return s.gaslessModule
 }
 
 func (s *CN) RegisterBaseModules(modules ...kaiax.BaseModule) {

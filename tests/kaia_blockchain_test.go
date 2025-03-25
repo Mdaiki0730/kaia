@@ -169,6 +169,7 @@ func newKaiaNode(t *testing.T, dir string, validator *TestAccountType, config *p
 		genesis = blockchain.DefaultGenesisBlock()
 		genesis.ExtraData = genesis.ExtraData[:types.IstanbulExtraVanity]
 		genesis.ExtraData = append(genesis.ExtraData, istanbulConfData...)
+		genesis.Alloc[validator.Addr] = blockchain.GenesisAccount{Balance: new(big.Int).Mul(big.NewInt(1000000000000000000), big.NewInt(params.KAIA))}
 	}
 
 	if config == nil {

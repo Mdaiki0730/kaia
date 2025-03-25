@@ -19,6 +19,7 @@
 package tests
 
 import (
+	"fmt"
 	"math/big"
 	"os"
 	"testing"
@@ -69,9 +70,14 @@ func TestGasless(t *testing.T) {
 		}
 	}()
 
+	numAccounts := 1
+	_, accounts, _ := createAccount(t, numAccounts, validator)
+
 	var (
 		owner            = validator
-		initialLiquidity = big.NewInt(1000)
+		bigKaia          = big.NewInt(params.KAIA)
+		bigGkei          = big.NewInt(params.Gkei)
+		initialLiquidity = new(big.Int).Mul(big.NewInt(1000), bigKaia)
 	)
 
 	/* ------------------------------------ prepare ------------------------------------- */
@@ -168,36 +174,66 @@ func TestGasless(t *testing.T) {
 	node.GetGaslessModule().UpdateAllowedToken(testTokenAddr)
 
 	/* ------------------------------------ main test ------------------------------------- */
-	swapAmmount := big.NewInt(1000000)
-	// amountsOut, err := routerContract.GetAmountsOut(&bind.CallOpts{}, swapAmmount, []common.Address{testTokenAddr, wkaiaAddr})
-	// if err != nil {
-	// 	t.Fatal(err)
-	// }
-	// swapExpectedOutput := amountsOut[1]
-	swapExpectedOutput := big.NewInt(100)
+	swapAmmount := new(big.Int).Mul(big.NewInt(1), bigKaia)
+	amountsOut, err := routerContract.GetAmountsOut(&bind.CallOpts{}, swapAmmount, []common.Address{testTokenAddr, wkaiaAddr})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fmt.Println(amountsOut)
+	swapExpectedOutput := amountsOut[1]
+	// swapExpectedOutput := big.NewInt(100)
 
 	var (
-		R1           = big.NewInt(21000)  // base gas
-		R2           = big.NewInt(100000) // approve gas
-		R3           = big.NewInt(500000) // swap gas
-		ammontRepay  = new(big.Int).Add(new(big.Int).Add(R1, R2), R3)
-		margin       = new(big.Int).Div(swapExpectedOutput, big.NewInt(100))
-		minAmountOut = new(big.Int).Add(ammontRepay, margin)
+		gasPriceBN    = new(big.Int).Mul(big.NewInt(50), bigGkei)
+		R1            = new(big.Int).Mul(big.NewInt(21000), gasPriceBN)
+		R2            = new(big.Int).Mul(big.NewInt(100000), gasPriceBN)
+		R3            = new(big.Int).Mul(big.NewInt(500000), gasPriceBN)
+		ammontRepay   = new(big.Int).Add(R1, new(big.Int).Add(R2, R3))
+		transferToken = new(big.Int).Mul(big.NewInt(100), bigKaia)
+		margin        = new(big.Int).Div(swapExpectedOutput, big.NewInt(100))
+		minAmountOut  = new(big.Int).Add(ammontRepay, margin)
 	)
 
-	// send approveTx
-	approveTx, err := testTokenContract.Approve(bind.NewKeyedTransactor(owner.Keys[0]), gsrAddr, swapAmmount)
+	/* ------------- transfer test token ------------- */
+	testTokenTransferTx, err := testTokenContract.Transfer(bind.NewKeyedTransactor(owner.Keys[0]), accounts[0].Addr, transferToken)
 	if err != nil {
 		t.Fatal(err)
+	}
+	testTokenTransferReceipt := waitReceipt(node.BlockChain().(*blockchain.BlockChain), testTokenTransferTx.Hash())
+	if testTokenTransferReceipt == nil {
+		t.Fatal("timeout")
 	}
 	owner.Nonce += 1
 
-	// send swapTx
-	swapTx, err := gsrContract.SwapForGas(bind.NewKeyedTransactor(owner.Keys[0]), testTokenAddr, swapAmmount, minAmountOut, ammontRepay)
+	balanceOfTestAcc, _ := testTokenContract.BalanceOf(&bind.CallOpts{}, accounts[0].Addr)
+	balanceOfOwner, _ := testTokenContract.BalanceOf(&bind.CallOpts{}, owner.Addr)
+	fmt.Println("test acc balance is: ", balanceOfTestAcc)
+	fmt.Println("owner balance is: ", balanceOfOwner)
+
+	// send approveTx
+	optsForApprove := bind.NewKeyedTransactor(accounts[0].Keys[0])
+	optsForApprove.GasLimit = 300000
+	optsForApprove.Nonce = big.NewInt(int64(accounts[0].Nonce))
+	approveTx, err := testTokenContract.Approve(optsForApprove, gsrAddr, swapAmmount)
 	if err != nil {
 		t.Fatal(err)
 	}
-	owner.Nonce += 1
+	fmt.Println("approveTxHash", approveTx.Hash().Hex())
+	accounts[0].Nonce += 1
+
+	// send swapTx
+	optsForSwap := bind.NewKeyedTransactor(accounts[0].Keys[0])
+	optsForSwap.GasLimit = 300000
+	optsForSwap.Nonce = big.NewInt(int64(accounts[0].Nonce))
+	swapTx, err := gsrContract.SwapForGas(optsForSwap, testTokenAddr, swapAmmount, minAmountOut, ammontRepay)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fmt.Println("swapTxHash", swapTx.Hash().Hex(), swapTx)
+	accounts[0].Nonce += 1
+
+	pending, queue := node.TxPool().Stats()
+	t.Log("pending", pending, "queue", queue)
 
 	chain := node.BlockChain().(*blockchain.BlockChain)
 

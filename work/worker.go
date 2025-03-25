@@ -23,6 +23,7 @@
 package work
 
 import (
+	"fmt"
 	"math/big"
 	"sync"
 	"sync/atomic"
@@ -684,6 +685,7 @@ func (env *Task) commitTransactions(mux *event.TypeMux, txs *types.TransactionsB
 func (env *Task) ApplyTransactions(txs *types.TransactionsByPriceAndNonce, bc BlockChain, rewardbase common.Address, txBundlingModules []builder.TxBundlingModule) []*types.Log {
 	arrayTxs := builder_impl.Arrayify(txs)
 	incorporatedTxs, bundles := builder_impl.ExtractBundlesAndIncorporate(arrayTxs, txBundlingModules)
+	fmt.Println(incorporatedTxs, "incorporatedTxs")
 	var coalescedLogs []*types.Log
 
 	// Limit the execution time of all transactions in a block
@@ -803,6 +805,7 @@ CommitTransactionLoop:
 			env.state.SetTxContext(tx.Hash(), common.Hash{}, env.tcount)
 			err, logs = env.commitTransaction(tx, bc, rewardbase, vmConfig)
 		}
+		fmt.Println(err, "ApplyTransaction error")
 
 		switch err {
 		case blockchain.ErrGasLimitReached:
@@ -927,6 +930,7 @@ func (env *Task) commitBundleTransaction(bundle *builder.Bundle, bc BlockChain, 
 		// Bundled tx will be rejected with any receipt.Status other than success.
 		// There may be cases where a revert occurs within the EVM, which could result in an attack on a tx sender in an already executed bundle.
 		if err != nil || receipt.Status != types.ReceiptStatusSuccessful {
+			fmt.Println(receipt, "receipt", tx.Hash().Hex(), "hash")
 			if err != vm.ErrInsufficientBalance && err != vm.ErrTotalTimeLimitReached {
 				for _, txInBundle := range bundle.BundleTxs {
 					switch v := txInBundle.(type) {

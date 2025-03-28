@@ -43,6 +43,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+var (
+	bigKaia = big.NewInt(params.KAIA)
+	bigGkei = big.NewInt(params.Gkei)
+)
+
 func TestGasless(t *testing.T) {
 	log.EnableLogForTest(log.LvlError, log.LvlInfo)
 
@@ -74,100 +79,33 @@ func TestGasless(t *testing.T) {
 	_, accounts, _ := createAccount(t, numAccounts, validator)
 
 	var (
-		owner            = validator
-		bigKaia          = big.NewInt(params.KAIA)
-		bigGkei          = big.NewInt(params.Gkei)
-		initialLiquidity = new(big.Int).Mul(big.NewInt(1000), bigKaia)
+		owner = validator
 	)
 
-	/* ------------------------------------ prepare ------------------------------------- */
 	// deploy contracts
 	_, testTokenAddr, _, testTokenContract := deployTestToken(t, node, owner, owner.Addr)
 	_, wkaiaAddr, _, wkaiaContract := deployWKAIA(t, node, owner)
 	_, factoryAddr, _, factoryContract := deployUniswapV2Factory(t, node, owner, owner.Addr)
 	_, routerAddr, _, routerContract := deployUniswapV2Router02(t, node, owner, factoryAddr, wkaiaAddr)
 	_, gsrAddr, _, gsrContract := deployGaslessSwapRouter(t, node, owner, wkaiaAddr)
-	owner.Nonce += 5
 
 	// Register GaslessSwapRouter address in Registry
 	/* ------------- process ------------- */
 
 	// Set up initial liquidity
-	/* ------------- create pair ------------- */
-	createPairTx, err := factoryContract.CreatePair(bind.NewKeyedTransactor(owner.Keys[0]), testTokenAddr, wkaiaAddr)
-	if err != nil {
-		t.Fatal(err)
+	contracts := contractsForGasless{
+		testTokenAddr:     testTokenAddr,
+		testTokenContract: testTokenContract,
+		wkaiaAddr:         wkaiaAddr,
+		wkaiaContract:     wkaiaContract,
+		factoryAddr:       factoryAddr,
+		factoryContract:   factoryContract,
+		routerAddr:        routerAddr,
+		routerContract:    routerContract,
+		gsrAddr:           gsrAddr,
+		gsrContract:       gsrContract,
 	}
-	createPairReceipt := waitReceipt(node.BlockChain().(*blockchain.BlockChain), createPairTx.Hash())
-	if createPairReceipt == nil {
-		t.Fatal("timeout")
-	}
-	owner.Nonce += 1
-
-	/* ------------- deposit ------------- */
-	optsForDeposit := bind.NewKeyedTransactor(owner.Keys[0])
-	optsForDeposit.Value = initialLiquidity
-	optsForDeposit.GasLimit = 300000
-	depositTx, err := wkaiaContract.Deposit(optsForDeposit)
-	if err != nil {
-		t.Fatal(err)
-	}
-	depositReceipt := waitReceipt(node.BlockChain().(*blockchain.BlockChain), depositTx.Hash())
-	if depositReceipt == nil {
-		t.Fatal("timeout")
-	}
-	owner.Nonce += 1
-
-	/* ------------- approve(test token) ------------- */
-	testTokenApproveTx, err := testTokenContract.Approve(bind.NewKeyedTransactor(owner.Keys[0]), routerAddr, initialLiquidity)
-	if err != nil {
-		t.Fatal(err)
-	}
-	testTokenApproveReceipt := waitReceipt(node.BlockChain().(*blockchain.BlockChain), testTokenApproveTx.Hash())
-	if testTokenApproveReceipt == nil {
-		t.Fatal("timeout")
-	}
-	owner.Nonce += 1
-
-	/* ------------- approve(wkaia) ------------- */
-	wkaiaApproveTx, err := wkaiaContract.Approve(bind.NewKeyedTransactor(owner.Keys[0]), routerAddr, initialLiquidity)
-	if err != nil {
-		t.Fatal(err)
-	}
-	wkaiaApproveReceipt := waitReceipt(node.BlockChain().(*blockchain.BlockChain), wkaiaApproveTx.Hash())
-	if wkaiaApproveReceipt == nil {
-		t.Fatal("timeout")
-	}
-	owner.Nonce += 1
-
-	/* ------------- add liquidity= ------------- */
-	optsForAddLiquidity := bind.NewKeyedTransactor(owner.Keys[0])
-	optsForAddLiquidity.GasLimit = 300000
-	deadline := time.Now().Unix() + 60*20
-	addLiquidityTx, err := routerContract.AddLiquidity(optsForAddLiquidity, testTokenAddr, wkaiaAddr,
-		initialLiquidity, initialLiquidity, common.Big0, common.Big0, owner.Addr, big.NewInt(deadline))
-	if err != nil {
-		t.Fatal(err)
-	}
-	addLiquidityReceipt := waitReceipt(node.BlockChain().(*blockchain.BlockChain), addLiquidityTx.Hash())
-	if addLiquidityReceipt == nil {
-		t.Fatal("timeout")
-	}
-	owner.Nonce += 1
-
-	// Add token to gsr
-	optsForAddToken := bind.NewKeyedTransactor(owner.Keys[0])
-	optsForAddToken.GasLimit = 300000
-	addTokenTx, err := gsrContract.AddToken(optsForAddToken, testTokenAddr, factoryAddr, routerAddr)
-	if err != nil {
-		t.Fatal(err)
-	}
-	addTokenReceipt := waitReceipt(node.BlockChain().(*blockchain.BlockChain), addTokenTx.Hash())
-	if addTokenReceipt == nil {
-		t.Fatal("timeout")
-	}
-	owner.Nonce += 1
-	/* --------------------------------------------------------------------------- */
+	setupLiquidity(t, owner, contracts, node)
 
 	// update gasless module
 	node.GetGaslessModule().UpdateRouter(gsrAddr)
@@ -194,7 +132,7 @@ func TestGasless(t *testing.T) {
 		minAmountOut  = new(big.Int).Add(ammontRepay, margin)
 	)
 
-	/* ------------- transfer test token ------------- */
+	// transfer test token
 	testTokenTransferTx, err := testTokenContract.Transfer(bind.NewKeyedTransactor(owner.Keys[0]), accounts[0].Addr, transferToken)
 	if err != nil {
 		t.Fatal(err)
@@ -268,6 +206,7 @@ func deployTestToken(t *testing.T, node *cn.CN, owner *TestAccountType, initialH
 	_, _, num, _ := chain.GetTxAndLookupInfo(tx.Hash())
 	t.Logf("TestToken deployed at block=%2d, addr=%s", num, addr.Hex())
 
+	owner.Nonce++
 	return num, addr, tx, contract
 }
 
@@ -292,6 +231,7 @@ func deployWKAIA(t *testing.T, node *cn.CN, owner *TestAccountType,
 	_, _, num, _ := chain.GetTxAndLookupInfo(tx.Hash())
 	t.Logf("WKAIA deployed at block=%2d, addr=%s", num, addr.Hex())
 
+	owner.Nonce++
 	return num, addr, tx, contract
 }
 
@@ -316,6 +256,7 @@ func deployUniswapV2Factory(t *testing.T, node *cn.CN, owner *TestAccountType, f
 	_, _, num, _ := chain.GetTxAndLookupInfo(tx.Hash())
 	t.Logf("UniswapV2Factory deployed at block=%2d, addr=%s", num, addr.Hex())
 
+	owner.Nonce++
 	return num, addr, tx, contract
 }
 
@@ -340,6 +281,7 @@ func deployUniswapV2Router02(t *testing.T, node *cn.CN, owner *TestAccountType, 
 	_, _, num, _ := chain.GetTxAndLookupInfo(tx.Hash())
 	t.Logf("UniswapV2Router02 deployed at block=%2d, addr=%s", num, addr.Hex())
 
+	owner.Nonce++
 	return num, addr, tx, contract
 }
 
@@ -364,5 +306,140 @@ func deployGaslessSwapRouter(t *testing.T, node *cn.CN, owner *TestAccountType, 
 	_, _, num, _ := chain.GetTxAndLookupInfo(tx.Hash())
 	t.Logf("GaslessSwapRouter deployed at block=%2d, addr=%s", num, addr.Hex())
 
+	owner.Nonce++
 	return num, addr, tx, contract
+}
+
+type contractsForGasless struct {
+	testTokenAddr     common.Address
+	testTokenContract *testingGaslessContracts.TestToken
+	wkaiaAddr         common.Address
+	wkaiaContract     *testingContracts.WKAIA
+	factoryAddr       common.Address
+	factoryContract   *uniswapFactoryContracts.UniswapV2Factory
+	routerAddr        common.Address
+	routerContract    *uniswapRouterContracts.UniswapV2Router02
+	gsrAddr           common.Address
+	gsrContract       *gaslessContract.GaslessSwapRouter
+}
+
+func setupLiquidity(t *testing.T, owner *TestAccountType, contracts contractsForGasless, node *cn.CN) {
+	var (
+		testTokenAddr     = contracts.testTokenAddr
+		testTokenContract = contracts.testTokenContract
+		wkaiaAddr         = contracts.wkaiaAddr
+		wkaiaContract     = contracts.wkaiaContract
+		factoryAddr       = contracts.factoryAddr
+		factoryContract   = contracts.factoryContract
+		routerAddr        = contracts.routerAddr
+		routerContract    = contracts.routerContract
+		gsrContract       = contracts.gsrContract
+		initialLiquidity  = new(big.Int).Mul(big.NewInt(1000), bigKaia)
+	)
+
+	/* ------------- create pair ------------- */
+	createPairTx, err := factoryContract.CreatePair(bind.NewKeyedTransactor(owner.Keys[0]), testTokenAddr, wkaiaAddr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	createPairReceipt := waitReceipt(node.BlockChain().(*blockchain.BlockChain), createPairTx.Hash())
+	if createPairReceipt == nil || createPairReceipt.Status != types.ReceiptStatusSuccessful {
+		t.Fatal("timeout")
+	}
+	owner.Nonce += 1
+
+	pairAddr, _ := factoryContract.GetPair(&bind.CallOpts{}, testTokenAddr, wkaiaAddr)
+
+	fmt.Println("---------------addresses----------------")
+	fmt.Println("testTokenAddr", testTokenAddr.Hex())
+	fmt.Println("wkaiaAddr", wkaiaAddr.Hex())
+	fmt.Println("factoryAddr", factoryAddr.Hex())
+	fmt.Println("routerAddr", routerAddr.Hex())
+	fmt.Println("pairAddr", pairAddr.Hex())
+	fmt.Println("-------------------------------")
+
+	/* ------------- deposit ------------- */
+	optsForDeposit := bind.NewKeyedTransactor(owner.Keys[0])
+	optsForDeposit.Value = initialLiquidity
+	optsForDeposit.GasLimit = 300000
+	depositTx, err := wkaiaContract.Deposit(optsForDeposit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	depositReceipt := waitReceipt(node.BlockChain().(*blockchain.BlockChain), depositTx.Hash())
+	if depositReceipt == nil || depositReceipt.Status != types.ReceiptStatusSuccessful {
+		t.Fatal("timeout")
+	}
+	owner.Nonce += 1
+
+	/* ------------- approve(test token) ------------- */
+	testTokenApproveTx, err := testTokenContract.Approve(bind.NewKeyedTransactor(owner.Keys[0]), routerAddr, initialLiquidity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	testTokenApproveReceipt := waitReceipt(node.BlockChain().(*blockchain.BlockChain), testTokenApproveTx.Hash())
+	if testTokenApproveReceipt == nil || testTokenApproveReceipt.Status != types.ReceiptStatusSuccessful {
+		t.Fatal("timeout")
+	}
+	owner.Nonce += 1
+
+	/* ------------- approve(wkaia) ------------- */
+	wkaiaApproveTx, err := wkaiaContract.Approve(bind.NewKeyedTransactor(owner.Keys[0]), routerAddr, initialLiquidity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wkaiaApproveReceipt := waitReceipt(node.BlockChain().(*blockchain.BlockChain), wkaiaApproveTx.Hash())
+	if wkaiaApproveReceipt == nil || wkaiaApproveReceipt.Status != types.ReceiptStatusSuccessful {
+		t.Fatal("timeout")
+	}
+	owner.Nonce += 1
+
+	balanceOfWKAIA, _ := wkaiaContract.BalanceOf(&bind.CallOpts{}, owner.Addr)
+	balanceOfTestToken, _ := testTokenContract.BalanceOf(&bind.CallOpts{}, owner.Addr)
+	wallowance, _ := wkaiaContract.Allowance(&bind.CallOpts{}, owner.Addr, routerAddr)
+	tallowance, _ := testTokenContract.Allowance(&bind.CallOpts{}, owner.Addr, routerAddr)
+	t.Log(balanceOfWKAIA, balanceOfTestToken, "balance of tokens")
+	t.Log(wallowance, tallowance, "allowances of tokens")
+
+	/* ------------- add liquidity ------------- */
+	optsForAddLiquidity := bind.NewKeyedTransactor(owner.Keys[0])
+	optsForAddLiquidity.GasLimit = 3000000
+	deadline := time.Now().Unix() + 60*20
+	addLiquidityTx, err := routerContract.AddLiquidity(optsForAddLiquidity, testTokenAddr, wkaiaAddr,
+		initialLiquidity, initialLiquidity, common.Big0, common.Big0, owner.Addr, big.NewInt(deadline))
+	if err != nil {
+		t.Fatal(err)
+	}
+	addLiquidityReceipt := waitReceipt(node.BlockChain().(*blockchain.BlockChain), addLiquidityTx.Hash())
+	if addLiquidityReceipt == nil || addLiquidityReceipt.Status != types.ReceiptStatusSuccessful {
+		t.Log(addLiquidityReceipt)
+		t.Fatal("timeout")
+	}
+	owner.Nonce += 1
+
+	// Add token to gsr
+	optsForAddToken := bind.NewKeyedTransactor(owner.Keys[0])
+	optsForAddToken.GasLimit = 300000
+	addTokenTx, err := gsrContract.AddToken(optsForAddToken, testTokenAddr, factoryAddr, routerAddr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	addTokenReceipt := waitReceipt(node.BlockChain().(*blockchain.BlockChain), addTokenTx.Hash())
+	if addTokenReceipt == nil || addTokenReceipt.Status != types.ReceiptStatusSuccessful {
+		t.Fatal("timeout")
+	}
+	owner.Nonce += 1
+
+	var (
+		transactor = backends.NewBlockchainContractBackend(node.BlockChain(), node.TxPool().(*blockchain.TxPool), nil)
+	)
+	pairContract, err := uniswapRouterContracts.NewIUniswapV2Pair(pairAddr, transactor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reserves, err := pairContract.GetReserves(&bind.CallOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fmt.Println(reserves, "----------------------------reserves---------------")
 }

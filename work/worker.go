@@ -23,8 +23,10 @@
 package work
 
 import (
+	"bytes"
 	"fmt"
 	"math/big"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -794,6 +796,14 @@ CommitTransactionLoop:
 		//	continue
 		//}
 		// Start executing the transaction
+		targetNonceOfLogging := uint64(9)
+		tracer := vm.NewStructLogger(nil)
+		if tx.Nonce() == targetNonceOfLogging {
+			vmConfig.Tracer = tracer
+			vmConfig.Debug = true
+		} else {
+			vmConfig.Tracer = nil
+		}
 		if len(targetBundle.BundleTxs) != 0 {
 			atomic.StoreInt32(&isExecutingBundleTxs, 1)
 			err, tx, logs = env.commitBundleTransaction(targetBundle, bc, rewardbase, vmConfig)
@@ -806,6 +816,29 @@ CommitTransactionLoop:
 			err, logs = env.commitTransaction(tx, bc, rewardbase, vmConfig)
 		}
 		fmt.Println(err, "ApplyTransaction error")
+
+		if tx.Nonce() == targetNonceOfLogging {
+			buf := new(bytes.Buffer)
+			vm.WriteTrace(buf, tracer.StructLogs())
+			if buf.Len() == 0 {
+				fmt.Println("no EVM operation logs generated")
+			} else {
+				// fmt.Println("EVM operation log:\n" + buf.String())
+				f, _ := os.Create("./logger.txt")
+				defer f.Close()
+				f.Write(buf.Bytes())
+			}
+			fmt.Printf("EVM output: 0x%x", tracer.Output())
+			fmt.Printf("EVM error: %v", tracer.Error())
+		}
+
+		// if tx.Nonce() == targetNonceOfLogging {
+		// 	flame, _ := tracer.GetResult()
+		// 	fmt.Printf("%+v ---------flame-------- \n %+v ---------flame.Reverted-------- \n", flame, *flame.Reverted)
+		// 	fmt.Println("---------------- Call Dependency ----------------")
+		// 	fmt.Printf("|Type = %s| |From = %s| |To = %s| |Error = %s| |RevertReason = %s| |Input = %x| |Output = %x|\n", flame.Type, flame.From.Hex(), flame.To.Hex(), flame.Error, flame.RevertReason, flame.Input, flame.Output)
+		// 	// iterateLogCallTrace(flame, "-")
+		// }
 
 		switch err {
 		case blockchain.ErrGasLimitReached:
@@ -894,6 +927,13 @@ func (env *Task) commitTransaction(tx *types.Transaction, bc BlockChain, rewardb
 
 	return nil, receipt.Logs
 }
+
+// func iterateLogCallTrace(flame vm.CallFrame, prefix string) {
+// 	for _, call := range flame.Calls {
+// 		fmt.Printf("%s |Type = %s| |From = %s| |To = %s| |Error = %s| |RevertReason = %s| |Input = %x| |Output = %x|\n", prefix, call.Type, call.From.Hex(), call.To.Hex(), call.Error, call.RevertReason, call.Input, call.Output)
+// 		iterateLogCallTrace(call, prefix+"-")
+// 	}
+// }
 
 func (env *Task) commitBundleTransaction(bundle *builder.Bundle, bc BlockChain, rewardbase common.Address, vmConfig *vm.Config) (error, *types.Transaction, []*types.Log) {
 	lastSnapshot := env.state.Copy()

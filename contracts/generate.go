@@ -21,7 +21,7 @@ package contracts
 /*
 Recommended to install solc-select or svm-rs to switch solc versions within abigenw.
 
-	solc-select install 0.4.24 0.5.6 0.5.9 0.5.16 0.6.6 0.8.19 0.8.25
+	solc-select install 0.4.24 0.5.6 0.5.9 0.5.16 0.6.6 0.8.13 0.8.19 0.8.25
 	go generate
 
 Othewise, you can manually switch solc versions and run go generate for each solc version.
@@ -31,6 +31,7 @@ Othewise, you can manually switch solc versions and run go generate for each sol
 	go generate --run 0.5.9
 	go generate --run 0.5.16
 	go generate --run 0.6.6
+	go generate --run 0.8.13
 	go generate --run 0.8.19
 	go generate --run 0.8.25
 */
@@ -60,6 +61,10 @@ Othewise, you can manually switch solc versions and run go generate for each sol
 // These files were compiled with solidity 0.6.6.
 
 //go:generate ./abigenw --pkg router --sol ./node_modules/@uniswap/v2-periphery/contracts/UniswapV2Router02.sol --out ./contracts/libs/uniswap/router/UniswapV2Router02.go --ver 0.6.6
+
+// These files were compiled with solidity 0.8.13.
+
+//go:generate ./abigenw --pkg deployer --sol ./contracts/testing/deployer/Factory.sol --out ./contracts/testing/deployer/Factory.go --ver 0.8.13
 
 // These files were compiled with solidity 0.8.19.
 

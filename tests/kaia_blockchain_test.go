@@ -28,6 +28,7 @@ import (
 	"github.com/kaiachain/kaia/accounts/keystore"
 	"github.com/kaiachain/kaia/blockchain"
 	"github.com/kaiachain/kaia/blockchain/types"
+	"github.com/kaiachain/kaia/blockchain/types/accountkey"
 	"github.com/kaiachain/kaia/common"
 	"github.com/kaiachain/kaia/consensus/istanbul"
 	"github.com/kaiachain/kaia/crypto"
@@ -100,9 +101,13 @@ func newBlockchain(t *testing.T, config *params.ChainConfig, genesis *blockchain
 	t.Log("Workspace is ", workspace)
 
 	// Prepare a validator
-	validator, err := createAnonymousAccount(getRandomPrivateKeyString(t))
-	if err != nil {
-		t.Fatal(err)
+	key, _ := crypto.HexToECDSA("ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80")
+	addr := common.HexToAddress("0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266")
+	validator := &TestAccountType{
+		Addr:   addr,
+		Keys:   []*ecdsa.PrivateKey{key},
+		Nonce:  uint64(0),
+		AccKey: accountkey.NewAccountKeyPublicWithValue(&key.PublicKey),
 	}
 
 	// Create a Kaia node
@@ -169,6 +174,7 @@ func newKaiaNode(t *testing.T, dir string, validator *TestAccountType, config *p
 		genesis = blockchain.DefaultGenesisBlock()
 		genesis.ExtraData = genesis.ExtraData[:types.IstanbulExtraVanity]
 		genesis.ExtraData = append(genesis.ExtraData, istanbulConfData...)
+		genesis.Alloc[validator.Addr] = blockchain.GenesisAccount{Balance: new(big.Int).Mul(big.NewInt(1000000000000000000), big.NewInt(params.KAIA))}
 	}
 
 	if config == nil {

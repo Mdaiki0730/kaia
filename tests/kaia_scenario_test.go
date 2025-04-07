@@ -2284,7 +2284,7 @@ func testSendApproveTxAndSwapTxScenario(t *testing.T, bcdata *BCData, rewardBase
 
 			testTokenAddr = crypto.CreateAddress(rewardBase.Addr, rewardBase.Nonce)
 			rewardBase.Nonce += 1
-			t.Log(testTokenAddr.Hex())
+			t.Log("testTokenAddr", testTokenAddr.Hex())
 
 			// check receipt
 			receipt := bcdata.bc.GetReceiptByTxHash(tx.Hash())
@@ -2318,7 +2318,7 @@ func testSendApproveTxAndSwapTxScenario(t *testing.T, bcdata *BCData, rewardBase
 
 			wkaiaAddr = crypto.CreateAddress(rewardBase.Addr, rewardBase.Nonce)
 			rewardBase.Nonce += 1
-			t.Log(wkaiaAddr.Hex())
+			t.Log("wkaiaAddr", wkaiaAddr.Hex())
 
 			// check receipt
 			receipt := bcdata.bc.GetReceiptByTxHash(tx.Hash())
@@ -2352,7 +2352,7 @@ func testSendApproveTxAndSwapTxScenario(t *testing.T, bcdata *BCData, rewardBase
 
 			factoryAddr = crypto.CreateAddress(rewardBase.Addr, rewardBase.Nonce)
 			rewardBase.Nonce += 1
-			t.Log(factoryAddr.Hex())
+			t.Log("factoryAddr", factoryAddr.Hex())
 
 			// check receipt
 			receipt := bcdata.bc.GetReceiptByTxHash(tx.Hash())
@@ -2385,7 +2385,7 @@ func testSendApproveTxAndSwapTxScenario(t *testing.T, bcdata *BCData, rewardBase
 
 			routerAddr = crypto.CreateAddress(rewardBase.Addr, rewardBase.Nonce)
 			rewardBase.Nonce += 1
-			t.Log(routerAddr.Hex())
+			t.Log("routerAddr", routerAddr.Hex())
 
 			// check receipt
 			receipt := bcdata.bc.GetReceiptByTxHash(tx.Hash())
@@ -2419,7 +2419,7 @@ func testSendApproveTxAndSwapTxScenario(t *testing.T, bcdata *BCData, rewardBase
 
 			gsrAddr = crypto.CreateAddress(rewardBase.Addr, rewardBase.Nonce)
 			rewardBase.Nonce += 1
-			t.Log(gsrAddr.Hex())
+			t.Log("gsrAddr", gsrAddr.Hex())
 
 			// check receipt
 			receipt := bcdata.bc.GetReceiptByTxHash(tx.Hash())

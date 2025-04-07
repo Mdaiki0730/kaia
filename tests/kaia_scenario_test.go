@@ -20,6 +20,7 @@ package tests
 
 import (
 	"crypto/ecdsa"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -38,11 +39,18 @@ import (
 	"github.com/kaiachain/kaia/common"
 	"github.com/kaiachain/kaia/common/compiler"
 	"github.com/kaiachain/kaia/common/profile"
+	uniswapFactoryContracts "github.com/kaiachain/kaia/contracts/contracts/libs/uniswap/factory"
+	uniswapRouterContracts "github.com/kaiachain/kaia/contracts/contracts/libs/uniswap/router"
+	gaslessContract "github.com/kaiachain/kaia/contracts/contracts/system_contracts/kip247"
 	contracts "github.com/kaiachain/kaia/contracts/contracts/testing/reward"
+	testingContracts "github.com/kaiachain/kaia/contracts/contracts/testing/system_contracts"
+	testingGaslessContracts "github.com/kaiachain/kaia/contracts/contracts/testing/system_contracts/gasless"
 	"github.com/kaiachain/kaia/crypto"
 	"github.com/kaiachain/kaia/kaiax/builder"
 	builderImpl "github.com/kaiachain/kaia/kaiax/builder/impl"
 	mock_builder "github.com/kaiachain/kaia/kaiax/builder/mocks"
+	"github.com/kaiachain/kaia/kaiax/gasless"
+	gasless_impl "github.com/kaiachain/kaia/kaiax/gasless/impl"
 	"github.com/kaiachain/kaia/log"
 	"github.com/kaiachain/kaia/params"
 	"github.com/kaiachain/kaia/rlp"
@@ -1903,7 +1911,7 @@ func TestTxBundle(t *testing.T) {
 			accountMap *AccountMap, prof *profile.Profiler,
 			txBundlingModules []builder.TxBundlingModule, builderModule builder.BuilderModule,
 		)
-		bundleFuncMaker func(rewardBase, anon *TestAccountType, signer types.Signer, amount, gasPrice *big.Int,
+		bundleFuncMaker func(bcdata *BCData, rewardBase, anon *TestAccountType, signer types.Signer, amount, gasPrice *big.Int,
 		) func([]*types.Transaction, []*builder.Bundle) []*builder.Bundle
 	}{
 		{
@@ -1951,6 +1959,12 @@ func TestTxBundle(t *testing.T) {
 			runScenario:     testTxBundleTimeOutScenario,
 			bundleFuncMaker: bundleAll,
 		},
+		{
+			// TestSendApproveTxAndSwapTx tests a following scenario:
+			name:            "TestSendApproveTxAndSwapTx",
+			runScenario:     testSendApproveTxAndSwapTxScenario,
+			bundleFuncMaker: bundleGaslessWrapper,
+		},
 	}
 
 	for _, tc := range testcases {
@@ -1960,7 +1974,7 @@ func TestTxBundle(t *testing.T) {
 
 			// Initialize blockchain
 			start := time.Now()
-			bcdata, err := NewBCData(6, 4)
+			bcdata, err := NewBCDataWithForkConfig(6, 4, Forks["Prague"])
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1997,7 +2011,7 @@ func TestTxBundle(t *testing.T) {
 			amount := new(big.Int).Mul(common.Big1, new(big.Int).SetUint64(params.KAIA))
 			gasPrice := new(big.Int).SetUint64(bcdata.bc.Config().UnitPrice)
 			// Create a bundleFunc to finalize the mock's ExtractTxBundles processing.
-			bundleFunc := tc.bundleFuncMaker(rewardBase, anon, signer, amount, gasPrice)
+			bundleFunc := tc.bundleFuncMaker(bcdata, rewardBase, anon, signer, amount, gasPrice)
 
 			if testing.Verbose() {
 				fmt.Println("rewardBaseAddr = ", rewardBase.Addr.String())
@@ -2151,13 +2165,13 @@ func testTxBundleRevertByEvmErrorScenario(t *testing.T, bcdata *BCData, rewardBa
 				types.TxValueKeyGasPrice: gasPrice,
 				types.TxValueKeyData:     data,
 			}
-			executionTx, err := types.NewTransactionWithMap(types.TxTypeSmartContractExecution, values)
+			tx, err := types.NewTransactionWithMap(types.TxTypeSmartContractExecution, values)
 			assert.Equal(t, nil, err)
 			rewardBase.Nonce += 1
 
-			err = executionTx.SignWithKeys(signer, rewardBase.Keys)
+			err = tx.SignWithKeys(signer, rewardBase.Keys)
 			assert.Equal(t, nil, err)
-			txs = append(txs, executionTx)
+			txs = append(txs, tx)
 		}
 
 		// TransferTx and ExecutionTx are bundled, and then ExecutionTx fails due to OutOfGas, so it is reverted.
@@ -2228,7 +2242,570 @@ func testTxBundleTimeOutScenario(t *testing.T, bcdata *BCData, rewardBase, valid
 	}
 }
 
-func bundleEachTwoTxs(_, _ *TestAccountType, _ types.Signer, _, _ *big.Int,
+func testSendApproveTxAndSwapTxScenario(t *testing.T, bcdata *BCData, rewardBase, validator, anon *TestAccountType,
+	accountMap *AccountMap, prof *profile.Profiler,
+	txBundlingModules []builder.TxBundlingModule, builderModule builder.BuilderModule,
+) {
+	signer := types.LatestSignerForChainID(bcdata.bc.Config().ChainID)
+	gasPrice := new(big.Int).SetUint64(bcdata.bc.Config().UnitPrice)
+	testTokenAddr := common.Address{}
+	wkaiaAddr := common.Address{}
+	factoryAddr := common.Address{}
+	routerAddr := common.Address{}
+	gsrAddr := common.Address{}
+	amountToSend := new(big.Int).SetUint64(0)
+	initialLiquidity := new(big.Int).Mul(big.NewInt(1000), bigKaia)
+
+	// 1. Deploy contracts
+	{
+		// deploy test token
+		{
+			var txs types.Transactions
+			amount := new(big.Int).SetUint64(0)
+			abii, err := abi.JSON(strings.NewReader(string(testingGaslessContracts.TestTokenABI)))
+			assert.Equal(t, nil, err)
+
+			// constructor param
+			args, err := abii.Pack("", rewardBase.Addr)
+			assert.Equal(t, nil, err)
+
+			code := testingGaslessContracts.TestTokenBin + hex.EncodeToString(args)
+
+			tx := types.NewContractCreation(rewardBase.Nonce, amount, gasLimit, gasPrice, common.FromHex(code))
+
+			err = tx.SignWithKeys(signer, rewardBase.Keys)
+			assert.Equal(t, nil, err)
+
+			txs = append(txs, tx)
+
+			if err := bcdata.GenABlockWithTransactions(accountMap, txs, prof); err != nil {
+				t.Fatal(err)
+			}
+
+			testTokenAddr = crypto.CreateAddress(rewardBase.Addr, rewardBase.Nonce)
+			rewardBase.Nonce += 1
+			t.Log(testTokenAddr.Hex())
+
+			// check receipt
+			receipt := bcdata.bc.GetReceiptByTxHash(tx.Hash())
+			assert.NotNil(t, receipt)
+			assert.Equal(t, types.ReceiptStatusSuccessful, receipt.Status)
+		}
+
+		// deploy wkaia
+		{
+			var txs types.Transactions
+			amount := new(big.Int).SetUint64(0)
+			abii, err := abi.JSON(strings.NewReader(string(testingContracts.WKAIAABI)))
+			assert.Equal(t, nil, err)
+
+			// constructor param
+			args, err := abii.Pack("")
+			assert.Equal(t, nil, err)
+
+			code := testingContracts.WKAIABin + hex.EncodeToString(args)
+
+			tx := types.NewContractCreation(rewardBase.Nonce, amount, gasLimit, gasPrice, common.FromHex(code))
+
+			err = tx.SignWithKeys(signer, rewardBase.Keys)
+			assert.Equal(t, nil, err)
+
+			txs = append(txs, tx)
+
+			if err := bcdata.GenABlockWithTransactions(accountMap, txs, prof); err != nil {
+				t.Fatal(err)
+			}
+
+			wkaiaAddr = crypto.CreateAddress(rewardBase.Addr, rewardBase.Nonce)
+			rewardBase.Nonce += 1
+			t.Log(wkaiaAddr.Hex())
+
+			// check receipt
+			receipt := bcdata.bc.GetReceiptByTxHash(tx.Hash())
+			assert.NotNil(t, receipt)
+			assert.Equal(t, types.ReceiptStatusSuccessful, receipt.Status)
+		}
+
+		// deploy uniswap factory
+		{
+			var txs types.Transactions
+			amount := new(big.Int).SetUint64(0)
+			abii, err := abi.JSON(strings.NewReader(string(uniswapFactoryContracts.UniswapV2FactoryABI)))
+			assert.Equal(t, nil, err)
+
+			// constructor param
+			args, err := abii.Pack("", rewardBase.Addr)
+			assert.Equal(t, nil, err)
+
+			code := uniswapFactoryContracts.UniswapV2FactoryBin + hex.EncodeToString(args)
+
+			tx := types.NewContractCreation(rewardBase.Nonce, amount, gasLimit, gasPrice, common.FromHex(code))
+
+			err = tx.SignWithKeys(signer, rewardBase.Keys)
+			assert.Equal(t, nil, err)
+
+			txs = append(txs, tx)
+
+			if err := bcdata.GenABlockWithTransactions(accountMap, txs, prof); err != nil {
+				t.Fatal(err)
+			}
+
+			factoryAddr = crypto.CreateAddress(rewardBase.Addr, rewardBase.Nonce)
+			rewardBase.Nonce += 1
+			t.Log(factoryAddr.Hex())
+
+			// check receipt
+			receipt := bcdata.bc.GetReceiptByTxHash(tx.Hash())
+			assert.NotNil(t, receipt)
+			assert.Equal(t, types.ReceiptStatusSuccessful, receipt.Status)
+		}
+		// deploy uniswap router
+		{
+			var txs types.Transactions
+			amount := new(big.Int).SetUint64(0)
+			abii, err := abi.JSON(strings.NewReader(string(uniswapRouterContracts.UniswapV2Router02ABI)))
+			assert.Equal(t, nil, err)
+
+			// constructor param
+			args, err := abii.Pack("", factoryAddr, wkaiaAddr)
+			assert.Equal(t, nil, err)
+
+			code := uniswapRouterContracts.UniswapV2Router02Bin + hex.EncodeToString(args)
+
+			tx := types.NewContractCreation(rewardBase.Nonce, amount, gasLimit, gasPrice, common.FromHex(code))
+
+			err = tx.SignWithKeys(signer, rewardBase.Keys)
+			assert.Equal(t, nil, err)
+
+			txs = append(txs, tx)
+
+			if err := bcdata.GenABlockWithTransactions(accountMap, txs, prof); err != nil {
+				t.Fatal(err)
+			}
+
+			routerAddr = crypto.CreateAddress(rewardBase.Addr, rewardBase.Nonce)
+			rewardBase.Nonce += 1
+			t.Log(routerAddr.Hex())
+
+			// check receipt
+			receipt := bcdata.bc.GetReceiptByTxHash(tx.Hash())
+			assert.NotNil(t, receipt)
+			assert.Equal(t, types.ReceiptStatusSuccessful, receipt.Status)
+		}
+
+		// deploy gsr
+		{
+			var txs types.Transactions
+			amount := new(big.Int).SetUint64(0)
+			abii, err := abi.JSON(strings.NewReader(string(gaslessContract.GaslessSwapRouterABI)))
+			assert.Equal(t, nil, err)
+
+			// constructor param
+			args, err := abii.Pack("", wkaiaAddr)
+			assert.Equal(t, nil, err)
+
+			code := gaslessContract.GaslessSwapRouterBin + hex.EncodeToString(args)
+
+			tx := types.NewContractCreation(rewardBase.Nonce, amount, gasLimit, gasPrice, common.FromHex(code))
+
+			err = tx.SignWithKeys(signer, rewardBase.Keys)
+			assert.Equal(t, nil, err)
+
+			txs = append(txs, tx)
+
+			if err := bcdata.GenABlockWithTransactions(accountMap, txs, prof); err != nil {
+				t.Fatal(err)
+			}
+
+			gsrAddr = crypto.CreateAddress(rewardBase.Addr, rewardBase.Nonce)
+			rewardBase.Nonce += 1
+			t.Log(gsrAddr.Hex())
+
+			// check receipt
+			receipt := bcdata.bc.GetReceiptByTxHash(tx.Hash())
+			assert.NotNil(t, receipt)
+			assert.Equal(t, types.ReceiptStatusSuccessful, receipt.Status)
+		}
+	}
+
+	// // 2.Add riquidity
+	{
+		/* ------------- create pair ------------- */
+		{
+			var txs types.Transactions
+			amountToSend := new(big.Int).SetUint64(0)
+			abii, err := abi.JSON(strings.NewReader(string(uniswapFactoryContracts.UniswapV2FactoryABI)))
+			assert.Equal(t, nil, err)
+
+			data, err := abii.Pack("createPair", testTokenAddr, wkaiaAddr)
+			assert.Equal(t, nil, err)
+
+			values := map[types.TxValueKeyType]interface{}{
+				types.TxValueKeyNonce:    rewardBase.Nonce,
+				types.TxValueKeyFrom:     rewardBase.Addr,
+				types.TxValueKeyTo:       factoryAddr,
+				types.TxValueKeyAmount:   amountToSend,
+				types.TxValueKeyGasLimit: gasLimit,
+				types.TxValueKeyGasPrice: gasPrice,
+				types.TxValueKeyData:     data,
+			}
+			tx, err := types.NewTransactionWithMap(types.TxTypeSmartContractExecution, values)
+			assert.Equal(t, nil, err)
+
+			err = tx.SignWithKeys(signer, rewardBase.Keys)
+			assert.Equal(t, nil, err)
+			txs = append(txs, tx)
+
+			if err := bcdata.GenABlockWithTransactionsWithBundle(accountMap, txs, nil, prof, txBundlingModules, builderModule); err != nil {
+				t.Fatal(err)
+			}
+			rewardBase.Nonce += 1
+
+			// check receipt
+			receipt := bcdata.bc.GetReceiptByTxHash(tx.Hash())
+			assert.NotNil(t, receipt)
+			assert.Equal(t, types.ReceiptStatusSuccessful, receipt.Status)
+		}
+
+		/* ------------- deposit ------------- */
+		{
+			var txs types.Transactions
+			abii, err := abi.JSON(strings.NewReader(string(testingContracts.WKAIAABI)))
+			assert.Equal(t, nil, err)
+
+			data, err := abii.Pack("deposit")
+			assert.Equal(t, nil, err)
+
+			values := map[types.TxValueKeyType]interface{}{
+				types.TxValueKeyNonce:    rewardBase.Nonce,
+				types.TxValueKeyFrom:     rewardBase.Addr,
+				types.TxValueKeyTo:       wkaiaAddr,
+				types.TxValueKeyAmount:   initialLiquidity,
+				types.TxValueKeyGasLimit: uint64(300000),
+				types.TxValueKeyGasPrice: gasPrice,
+				types.TxValueKeyData:     data,
+			}
+			tx, err := types.NewTransactionWithMap(types.TxTypeSmartContractExecution, values)
+			assert.Equal(t, nil, err)
+
+			err = tx.SignWithKeys(signer, rewardBase.Keys)
+			assert.Equal(t, nil, err)
+			txs = append(txs, tx)
+
+			if err := bcdata.GenABlockWithTransactionsWithBundle(accountMap, txs, nil, prof, txBundlingModules, builderModule); err != nil {
+				t.Fatal(err)
+			}
+			rewardBase.Nonce += 1
+
+			// check receipt
+			receipt := bcdata.bc.GetReceiptByTxHash(tx.Hash())
+			assert.NotNil(t, receipt)
+			assert.Equal(t, types.ReceiptStatusSuccessful, receipt.Status)
+		}
+
+		/* ------------- approve(test token) ------------- */
+		{
+			var txs types.Transactions
+			abii, err := abi.JSON(strings.NewReader(string(testingGaslessContracts.TestTokenABI)))
+			assert.Equal(t, nil, err)
+
+			data, err := abii.Pack("approve", routerAddr, initialLiquidity)
+			assert.Equal(t, nil, err)
+
+			values := map[types.TxValueKeyType]interface{}{
+				types.TxValueKeyNonce:    rewardBase.Nonce,
+				types.TxValueKeyFrom:     rewardBase.Addr,
+				types.TxValueKeyTo:       testTokenAddr,
+				types.TxValueKeyAmount:   amountToSend,
+				types.TxValueKeyGasLimit: gasLimit,
+				types.TxValueKeyGasPrice: gasPrice,
+				types.TxValueKeyData:     data,
+			}
+			tx, err := types.NewTransactionWithMap(types.TxTypeSmartContractExecution, values)
+			assert.Equal(t, nil, err)
+
+			err = tx.SignWithKeys(signer, rewardBase.Keys)
+			assert.Equal(t, nil, err)
+			txs = append(txs, tx)
+
+			if err := bcdata.GenABlockWithTransactionsWithBundle(accountMap, txs, nil, prof, txBundlingModules, builderModule); err != nil {
+				t.Fatal(err)
+			}
+			rewardBase.Nonce += 1
+
+			// check receipt
+			receipt := bcdata.bc.GetReceiptByTxHash(tx.Hash())
+			assert.NotNil(t, receipt)
+			assert.Equal(t, types.ReceiptStatusSuccessful, receipt.Status)
+		}
+
+		/* ------------- approve(wkaia) ------------- */
+		{
+			var txs types.Transactions
+			abii, err := abi.JSON(strings.NewReader(string(testingContracts.WKAIAABI)))
+			assert.Equal(t, nil, err)
+
+			data, err := abii.Pack("approve", routerAddr, initialLiquidity)
+			assert.Equal(t, nil, err)
+
+			values := map[types.TxValueKeyType]interface{}{
+				types.TxValueKeyNonce:    rewardBase.Nonce,
+				types.TxValueKeyFrom:     rewardBase.Addr,
+				types.TxValueKeyTo:       wkaiaAddr,
+				types.TxValueKeyAmount:   amountToSend,
+				types.TxValueKeyGasLimit: gasLimit,
+				types.TxValueKeyGasPrice: gasPrice,
+				types.TxValueKeyData:     data,
+			}
+			tx, err := types.NewTransactionWithMap(types.TxTypeSmartContractExecution, values)
+			assert.Equal(t, nil, err)
+
+			err = tx.SignWithKeys(signer, rewardBase.Keys)
+			assert.Equal(t, nil, err)
+			txs = append(txs, tx)
+
+			if err := bcdata.GenABlockWithTransactionsWithBundle(accountMap, txs, nil, prof, txBundlingModules, builderModule); err != nil {
+				t.Fatal(err)
+			}
+			rewardBase.Nonce += 1
+
+			// check receipt
+			receipt := bcdata.bc.GetReceiptByTxHash(tx.Hash())
+			assert.NotNil(t, receipt)
+			assert.Equal(t, types.ReceiptStatusSuccessful, receipt.Status)
+		}
+
+		/* ------------- add liquidity ------------- */
+		{
+			var txs types.Transactions
+			deadline := time.Now().Unix() + 60*20
+			abii, err := abi.JSON(strings.NewReader(string(uniswapRouterContracts.UniswapV2Router02ABI)))
+			assert.Equal(t, nil, err)
+
+			data, err := abii.Pack("addLiquidityETH", testTokenAddr, initialLiquidity, common.Big0, common.Big0, rewardBase.Addr, big.NewInt(deadline))
+			assert.Equal(t, nil, err)
+
+			values := map[types.TxValueKeyType]interface{}{
+				types.TxValueKeyNonce:    rewardBase.Nonce,
+				types.TxValueKeyFrom:     rewardBase.Addr,
+				types.TxValueKeyTo:       routerAddr,
+				types.TxValueKeyAmount:   amountToSend,
+				types.TxValueKeyGasLimit: uint64(3000000),
+				types.TxValueKeyGasPrice: gasPrice,
+				types.TxValueKeyData:     data,
+			}
+			tx, err := types.NewTransactionWithMap(types.TxTypeSmartContractExecution, values)
+			assert.Equal(t, nil, err)
+
+			err = tx.SignWithKeys(signer, rewardBase.Keys)
+			assert.Equal(t, nil, err)
+			txs = append(txs, tx)
+
+			if err := bcdata.GenABlockWithTransactionsWithBundle(accountMap, txs, nil, prof, txBundlingModules, builderModule); err != nil {
+				t.Fatal(err)
+			}
+			rewardBase.Nonce += 1
+
+			// check receipt
+			receipt := bcdata.bc.GetReceiptByTxHash(tx.Hash())
+			assert.NotNil(t, receipt)
+			assert.Equal(t, types.ReceiptStatusSuccessful, receipt.Status)
+		}
+
+		/* ------------- add token to gsr ------------- */
+		{
+			var txs types.Transactions
+			abii, err := abi.JSON(strings.NewReader(string(gaslessContract.GaslessSwapRouterABI)))
+			assert.Equal(t, nil, err)
+
+			data, err := abii.Pack("addToken", testTokenAddr, factoryAddr, routerAddr)
+			assert.Equal(t, nil, err)
+
+			values := map[types.TxValueKeyType]interface{}{
+				types.TxValueKeyNonce:    rewardBase.Nonce,
+				types.TxValueKeyFrom:     rewardBase.Addr,
+				types.TxValueKeyTo:       gsrAddr,
+				types.TxValueKeyAmount:   amountToSend,
+				types.TxValueKeyGasLimit: uint64(300000),
+				types.TxValueKeyGasPrice: gasPrice,
+				types.TxValueKeyData:     data,
+			}
+			tx, err := types.NewTransactionWithMap(types.TxTypeSmartContractExecution, values)
+			assert.Equal(t, nil, err)
+
+			err = tx.SignWithKeys(signer, rewardBase.Keys)
+			assert.Equal(t, nil, err)
+			txs = append(txs, tx)
+
+			if err := bcdata.GenABlockWithTransactionsWithBundle(accountMap, txs, nil, prof, txBundlingModules, builderModule); err != nil {
+				t.Fatal(err)
+			}
+			rewardBase.Nonce += 1
+
+			// check receipt
+			receipt := bcdata.bc.GetReceiptByTxHash(tx.Hash())
+			assert.NotNil(t, receipt)
+			assert.Equal(t, types.ReceiptStatusSuccessful, receipt.Status)
+		}
+	}
+
+	// // 3.Transfer & Send SwapTx & Send  (In same bundle)
+	{
+		var swapExpectedOutput *big.Int
+		swapAmount := new(big.Int).Mul(big.NewInt(1), bigKaia)
+		{
+			abii, err := abi.JSON(strings.NewReader(string(uniswapRouterContracts.UniswapV2Router02ABI)))
+			assert.Equal(t, nil, err)
+
+			data, err := abii.Pack("getAmountsOut", swapAmount, []common.Address{testTokenAddr, wkaiaAddr})
+			assert.Equal(t, nil, err)
+
+			values := map[types.TxValueKeyType]interface{}{
+				types.TxValueKeyNonce:    rewardBase.Nonce,
+				types.TxValueKeyFrom:     rewardBase.Addr,
+				types.TxValueKeyTo:       routerAddr,
+				types.TxValueKeyAmount:   amountToSend,
+				types.TxValueKeyGasLimit: gasLimit,
+				types.TxValueKeyGasPrice: big.NewInt(0),
+				types.TxValueKeyData:     data,
+			}
+			tx, err := types.NewTransactionWithMap(types.TxTypeSmartContractExecution, values)
+			assert.Equal(t, nil, err)
+			rewardBase.Nonce += 1
+
+			err = tx.SignWithKeys(signer, rewardBase.Keys)
+			assert.Equal(t, nil, err)
+
+			ret, err := callContract(bcdata, tx)
+			assert.Equal(t, nil, err)
+
+			amountsOut := []*big.Int{}
+			abii.UnpackIntoInterface(&amountsOut, "getAmountsOut", ret)
+			swapExpectedOutput = amountsOut[1]
+		}
+
+		var (
+			gasPriceBN    = new(big.Int).Mul(big.NewInt(50), bigGkei)
+			R1            = new(big.Int).Mul(big.NewInt(21000), gasPriceBN)
+			R2            = new(big.Int).Mul(big.NewInt(100000), gasPriceBN)
+			R3            = new(big.Int).Mul(big.NewInt(500000), gasPriceBN)
+			amountRepay   = new(big.Int).Add(R1, new(big.Int).Add(R2, R3))
+			transferToken = new(big.Int).Mul(big.NewInt(100), bigKaia)
+			margin        = new(big.Int).Div(swapExpectedOutput, big.NewInt(100))
+			minAmountOut  = new(big.Int).Add(amountRepay, margin)
+		)
+
+		/* ------------- transfer test token ------------- */
+		{
+			var txs types.Transactions
+			abii, err := abi.JSON(strings.NewReader(string(testingGaslessContracts.TestTokenABI)))
+			assert.Equal(t, nil, err)
+
+			data, err := abii.Pack("transfer", anon.Addr, transferToken)
+			assert.Equal(t, nil, err)
+
+			values := map[types.TxValueKeyType]interface{}{
+				types.TxValueKeyNonce:    rewardBase.Nonce,
+				types.TxValueKeyFrom:     rewardBase.Addr,
+				types.TxValueKeyTo:       testTokenAddr,
+				types.TxValueKeyAmount:   amountToSend,
+				types.TxValueKeyGasLimit: gasLimit,
+				types.TxValueKeyGasPrice: gasPrice,
+				types.TxValueKeyData:     data,
+			}
+			tx, err := types.NewTransactionWithMap(types.TxTypeSmartContractExecution, values)
+			assert.Equal(t, nil, err)
+
+			err = tx.SignWithKeys(signer, rewardBase.Keys)
+			assert.Equal(t, nil, err)
+			txs = append(txs, tx)
+
+			if err := bcdata.GenABlockWithTransactionsWithBundle(accountMap, txs, nil, prof, txBundlingModules, builderModule); err != nil {
+				t.Fatal(err)
+			}
+			rewardBase.Nonce += 1
+
+			// check receipt
+			receipt := bcdata.bc.GetReceiptByTxHash(tx.Hash())
+			assert.NotNil(t, receipt)
+			assert.Equal(t, types.ReceiptStatusSuccessful, receipt.Status)
+		}
+
+		/* ------------- send approveTx ------------- */
+		{
+			var txs types.Transactions
+			abii, err := abi.JSON(strings.NewReader(string(testingGaslessContracts.TestTokenABI)))
+			assert.Equal(t, nil, err)
+
+			data, err := abii.Pack("approve", gsrAddr, swapAmount)
+			assert.Equal(t, nil, err)
+
+			values := map[types.TxValueKeyType]interface{}{
+				types.TxValueKeyNonce:    anon.Nonce,
+				types.TxValueKeyFrom:     anon.Addr,
+				types.TxValueKeyTo:       testTokenAddr,
+				types.TxValueKeyAmount:   amountToSend,
+				types.TxValueKeyGasLimit: uint64(300000),
+				types.TxValueKeyGasPrice: gasPrice,
+				types.TxValueKeyData:     data,
+			}
+			tx, err := types.NewTransactionWithMap(types.TxTypeSmartContractExecution, values)
+			assert.Equal(t, nil, err)
+
+			err = tx.SignWithKeys(signer, anon.Keys)
+			assert.Equal(t, nil, err)
+			txs = append(txs, tx)
+
+			if err := bcdata.GenABlockWithTransactionsWithBundle(accountMap, txs, nil, prof, txBundlingModules, builderModule); err != nil {
+				t.Fatal(err)
+			}
+			anon.Nonce += 1
+
+			// check receipt
+			receipt := bcdata.bc.GetReceiptByTxHash(tx.Hash())
+			assert.NotNil(t, receipt)
+			assert.Equal(t, types.ReceiptStatusSuccessful, receipt.Status)
+		}
+
+		/* ------------- send swapTx ------------- */
+		{
+			var txs types.Transactions
+			abii, err := abi.JSON(strings.NewReader(string(gaslessContract.GaslessSwapRouterABI)))
+			assert.Equal(t, nil, err)
+
+			data, err := abii.Pack("swapForGas", testTokenAddr, swapAmount, minAmountOut, amountRepay)
+			assert.Equal(t, nil, err)
+
+			values := map[types.TxValueKeyType]interface{}{
+				types.TxValueKeyNonce:    anon.Nonce,
+				types.TxValueKeyFrom:     anon.Addr,
+				types.TxValueKeyTo:       gsrAddr,
+				types.TxValueKeyAmount:   amountToSend,
+				types.TxValueKeyGasLimit: uint64(300000),
+				types.TxValueKeyGasPrice: gasPrice,
+				types.TxValueKeyData:     data,
+			}
+			tx, err := types.NewTransactionWithMap(types.TxTypeSmartContractExecution, values)
+			assert.Equal(t, nil, err)
+
+			err = tx.SignWithKeys(signer, anon.Keys)
+			assert.Equal(t, nil, err)
+			txs = append(txs, tx)
+
+			if err := bcdata.GenABlockWithTransactionsWithBundle(accountMap, txs, nil, prof, txBundlingModules, builderModule); err != nil {
+				t.Fatal(err)
+			}
+			anon.Nonce += 1
+
+			// check receipt
+			receipt := bcdata.bc.GetReceiptByTxHash(tx.Hash())
+			assert.NotNil(t, receipt)
+			assert.Equal(t, types.ReceiptStatusSuccessful, receipt.Status)
+		}
+	}
+}
+
+func bundleEachTwoTxs(_ *BCData, _, _ *TestAccountType, _ types.Signer, _, _ *big.Int,
 ) func([]*types.Transaction, []*builder.Bundle) []*builder.Bundle {
 	return func(txs []*types.Transaction, _ []*builder.Bundle) []*builder.Bundle {
 		// Bundle every two tx
@@ -2252,7 +2829,7 @@ func bundleEachTwoTxs(_, _ *TestAccountType, _ types.Signer, _, _ *big.Int,
 	}
 }
 
-func bundleAllAndAddGenToFirst(rewardBase, anon *TestAccountType, signer types.Signer, amount, gasPrice *big.Int,
+func bundleAllAndAddGenToFirst(_ *BCData, rewardBase, anon *TestAccountType, signer types.Signer, amount, gasPrice *big.Int,
 ) func([]*types.Transaction, []*builder.Bundle) []*builder.Bundle {
 	return func(txs []*types.Transaction, _ []*builder.Bundle) []*builder.Bundle {
 		g := func(nonce uint64) (*types.Transaction, error) {
@@ -2276,7 +2853,7 @@ func bundleAllAndAddGenToFirst(rewardBase, anon *TestAccountType, signer types.S
 	}
 }
 
-func bundleAll(rewardBase, anon *TestAccountType, signer types.Signer, amount, gasPrice *big.Int,
+func bundleAll(_ *BCData, rewardBase, anon *TestAccountType, signer types.Signer, amount, gasPrice *big.Int,
 ) func([]*types.Transaction, []*builder.Bundle) []*builder.Bundle {
 	return func(txs []*types.Transaction, _ []*builder.Bundle) []*builder.Bundle {
 		// Bundle every tx
@@ -2287,6 +2864,23 @@ func bundleAll(rewardBase, anon *TestAccountType, signer types.Signer, amount, g
 		}
 		bundles = append(bundles, b)
 		return bundles
+	}
+}
+
+func bundleGaslessWrapper(bcdata *BCData, rewardBase, anon *TestAccountType, signer types.Signer, amount, gasPrice *big.Int,
+) func([]*types.Transaction, []*builder.Bundle) []*builder.Bundle {
+	// Initialize blockchain
+	txpool := makeTxPool(bcdata, 100)
+	mGasless := gasless_impl.NewGaslessModule()
+	mGasless.Init(&gasless_impl.InitOpts{
+		ChainConfig:   bcdata.bc.Config(),
+		GaslessConfig: &gasless.GaslessConfig{AllowedTokens: nil, Disable: false},
+		NodeKey:       rewardBase.Keys[0],
+		Chain:         bcdata.bc,
+		TxPool:        txpool,
+	})
+	return func(txs []*types.Transaction, prevBundle []*builder.Bundle) []*builder.Bundle {
+		return mGasless.ExtractTxBundles(txs, prevBundle)
 	}
 }
 

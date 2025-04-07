@@ -450,6 +450,7 @@ func (bcdata *BCData) genABlockWithTransactionsWithBundle(accountMap *AccountMap
 	if err != nil {
 		return err
 	}
+	fmt.Println(receipts)
 	prof.Profile("main_mineABlock", time.Now().Sub(start))
 
 	txs := make(types.Transactions, len(b.Transactions()))

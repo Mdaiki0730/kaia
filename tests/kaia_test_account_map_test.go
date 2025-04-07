@@ -18,6 +18,7 @@
 package tests
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"math/big"
@@ -186,7 +187,8 @@ func (a *AccountMap) Update(txs types.Transactions, txHashesExpectedFail []commo
 
 func (a *AccountMap) Verify(statedb *state.StateDB) error {
 	for addr, acc := range a.m {
-		if acc.nonce != statedb.GetNonce(addr) {
+		isNotContractAcc := bytes.Compare(statedb.GetCodeHash(addr).Bytes(), types.EmptyCodeHash[:]) == 0
+		if acc.nonce != statedb.GetNonce(addr) && isNotContractAcc {
 			return errors.New(fmt.Sprintf("[%s] nonce is different!! statedb(%d) != accountMap(%d).\n",
 				addr.Hex(), statedb.GetNonce(addr), acc.nonce))
 		}

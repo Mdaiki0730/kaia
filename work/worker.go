@@ -23,15 +23,11 @@
 package work
 
 import (
-	"encoding/json"
-	"fmt"
 	"math/big"
-	"os"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	kaiaapi "github.com/kaiachain/kaia/api"
 	"github.com/kaiachain/kaia/blockchain"
 	"github.com/kaiachain/kaia/blockchain/state"
 	"github.com/kaiachain/kaia/blockchain/types"
@@ -777,14 +773,14 @@ CommitTransactionLoop:
 		// We use the eip155 signer regardless of the current hf.
 		from, _ = types.Sender(env.signer, tx)
 
-		targetNonceOfLogging := uint64(9)
-		tracer := vm.NewStructLogger(nil)
-		if tx.Nonce() == targetNonceOfLogging {
-			vmConfig.Tracer = tracer
-			vmConfig.Debug = true
-		} else {
-			vmConfig.Tracer = nil
-		}
+		// targetNonceOfLogging := uint64(9)
+		// tracer := vm.NewStructLogger(nil)
+		// if tx.Nonce() == targetNonceOfLogging {
+		// 	vmConfig.Tracer = tracer
+		// 	vmConfig.Debug = true
+		// } else {
+		// 	vmConfig.Tracer = nil
+		// }
 
 		// NOTE-Kaia Since Kaia is always in EIP155, the below replay protection code is not needed.
 		// TODO-Kaia-RemoveLater Remove the code commented below.
@@ -809,20 +805,20 @@ CommitTransactionLoop:
 			err, logs = env.commitTransaction(tx, bc, rewardbase, vmConfig)
 		}
 
-		if tx.Nonce() == targetNonceOfLogging {
-			logs, _ := kaiaapi.FormatLogs(1*time.Second, tracer.StructLogs())
-			jb, _ := json.Marshal(logs)
-			if len(jb) == 0 {
-				fmt.Println("no EVM operation logs generated")
-			} else {
-				// fmt.Println("EVM operation log:\n" + buf.String())
-				f, _ := os.Create("./trace-addliquidity-golang-test.json")
-				defer f.Close()
-				f.Write(jb)
-			}
-			fmt.Printf("EVM output: 0x%x", tracer.Output())
-			fmt.Printf("EVM error: %v", tracer.Error())
-		}
+		// if tx.Nonce() == targetNonceOfLogging {
+		// 	logs, _ := kaiaapi.FormatLogs(1*time.Second, tracer.StructLogs())
+		// 	jb, _ := json.Marshal(logs)
+		// 	if len(jb) == 0 {
+		// 		fmt.Println("no EVM operation logs generated")
+		// 	} else {
+		// 		// fmt.Println("EVM operation log:\n" + buf.String())
+		// 		f, _ := os.Create("./trace-addliquidity-golang-test.json")
+		// 		defer f.Close()
+		// 		f.Write(jb)
+		// 	}
+		// 	fmt.Printf("EVM output: 0x%x", tracer.Output())
+		// 	fmt.Printf("EVM error: %v", tracer.Error())
+		// }
 
 		switch err {
 		case blockchain.ErrGasLimitReached:

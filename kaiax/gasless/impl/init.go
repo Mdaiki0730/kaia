@@ -60,6 +60,14 @@ func (g *GaslessModule) Init(opts *InitOpts) error {
 	return g.updateAddresses(g.Chain.CurrentBlock().Header())
 }
 
+func (g *GaslessModule) SetSwapRouterForTest(addr common.Address) {
+	g.swapRouter = addr
+}
+
+func (g *GaslessModule) SetAllowedTokensForTest(addr common.Address) {
+	g.allowedTokens[addr] = true
+}
+
 func (g *GaslessModule) IsDisabled() bool {
 	return g.GaslessConfig.Disable
 }

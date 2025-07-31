@@ -847,12 +847,19 @@ func (pool *TxPool) validateTx(tx *types.Transaction) error {
 
 	var (
 		from          = tx.ValidatedSender()
+		senderNonce   = pool.getNonce(from)
 		senderBalance = pool.getBalance(from)
 		gasFeePayer   = uint64(0)
 	)
 	// Ensure the transaction adheres to nonce ordering
-	if pool.getNonce(from) > tx.Nonce() {
+	if senderNonce > tx.Nonce() {
 		return ErrNonceTooLow
+	}
+
+	// If the ExecSlotsAll is reached, reject the transaction with higher nonce.
+	poolSize := uint64(pool.all.Count())
+	if poolSize >= pool.config.ExecSlotsAll && senderNonce < tx.Nonce() {
+		return ErrNonceTooHigh
 	}
 
 	// If module recognizes the tx, run an alternative balance check and then skip the default balance check later.

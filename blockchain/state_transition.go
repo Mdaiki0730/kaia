@@ -236,8 +236,11 @@ func (st *StateTransition) to() common.Address {
 func (st *StateTransition) buyGas() error {
 	// st.gasPrice : gasPrice user set before magma hardfork
 	// st.gasPrice : BaseFee after magma hardfork
-	mgval := new(big.Int).Mul(new(big.Int).SetUint64(st.msg.Gas()), st.gasPrice)
-	balanceCheck := new(big.Int).Set(mgval)
+
+	gasBig := new(big.Int).SetUint64(st.msg.Gas())
+	mgval := new(big.Int).Mul(gasBig, st.gasPrice)
+	balanceCheck := new(big.Int).Mul(gasBig, st.msg.GasFeeCap())
+	balanceCheck.Add(balanceCheck, st.msg.Value())
 
 	if st.evm.ChainConfig().Rules(st.evm.Context.BlockNumber).IsOsaka {
 		if blobGas := st.blobGasUsed(); blobGas > 0 {
